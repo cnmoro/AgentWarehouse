@@ -3,3 +3,4 @@ data/
 .env
 .claude/settings.local.json
 data-*/
+deploy/sandbox/resolv.conf

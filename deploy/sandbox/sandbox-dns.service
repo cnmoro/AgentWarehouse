@@ -1,0 +1,21 @@
+# DNS for sandbox containers, on the sandbox bridge (172.30.53.1): tailnet
+# names (*.ts.net, and bare names through the resolv.conf search domain) go to
+# Tailscale's MagicDNS, everything else to public resolvers. Running on the
+# host means nothing inside a sandbox can change it.
+[Unit]
+Description=DNS forwarder for web-terminal sandbox containers
+After=docker.service tailscaled.service
+PartOf=docker.service
+
+[Service]
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null \
+  --listen-address=172.30.53.1 --bind-dynamic --except-interface=lo \
+  --no-resolv --no-hosts --no-poll --cache-size=1000 \
+  --server=/ts.net/100.100.100.100 \
+  --server=/64.100.in-addr.arpa/100.100.100.100 \
+  --server=1.1.1.1 --server=8.8.8.8
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=docker.service

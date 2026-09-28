@@ -38,6 +38,10 @@ if ! sudo test -e "$SYSTEM_DIR/.seeded"; then
     -c "cp -a $(for p in $SYSTEM_PARTS; do printf '/%s ' "$p"; done) /seed/ && touch /seed/.seeded"
 fi
 
+# DNS through sandbox-dns.service on the bridge; the search domain makes bare
+# tailnet names ("ssh bigdata") work.
+printf 'nameserver 172.30.53.1\nsearch %s\noptions edns0\n' "${TS_NAME#*.}" > "$DATA_DIR/resolv.conf"
+
 MOUNTS=""
 for p in $SYSTEM_PARTS; do MOUNTS="$MOUNTS -v $SYSTEM_DIR/$p:/$p"; done
 
@@ -48,7 +52,7 @@ docker run -d --name "$NAME" --runtime="${RUNTIME:-runsc-suid}" --restart unless
   -p "$TS_IP:$PORT:$PORT" \
   -e PORT="$PORT" -e ALLOWED_HOSTS="$TS_IP,$TS_NAME" \
   $MOUNTS \
-  -v "$REPO/deploy/sandbox/resolv.conf:/etc/resolv.conf:ro" \
+  -v "$DATA_DIR/resolv.conf:/etc/resolv.conf:ro" \
   -v "$HOME_DIR:/home/$USER_NAME" \
   -v "$DATA_DIR:/data" \
   --hostname sandbox \
