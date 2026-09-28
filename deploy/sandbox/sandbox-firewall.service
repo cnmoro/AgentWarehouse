@@ -1,0 +1,13 @@
+[Unit]
+Description=Firewall for web-terminal sandbox containers
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/sandbox-firewall.sh
+
+[Install]
+WantedBy=docker.service
