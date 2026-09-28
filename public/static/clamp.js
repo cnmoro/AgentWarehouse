@@ -231,6 +231,53 @@
     proto.__clusterCapped = true;
   }
 
+  // xterm 6 can drop lines near the bottom when narrowing reflows a buffer
+  // whose scrollback is full (the reflow trims and loses track). Giving the
+  // reflow room for every line it may create avoids it; the scrollback limit
+  // is restored right after, which trims only the oldest lines. Widening
+  // creates no lines and needs nothing.
+  function safeResize(term, cols, rows) {
+    if (cols === term.cols && rows === term.rows) return;
+    const buffers = term._core && term._core.buffers;
+    const lines = buffers && buffers.normal && buffers.normal.lines;
+    const limit = term.options.scrollback;
+    const need = lines && cols < term.cols ? lines.length * Math.ceil(term.cols / cols) + rows : 0;
+    if (!(need > lines.maxLength)) {
+      term.resize(cols, rows);
+      return;
+    }
+    try {
+      term.options.scrollback = need;
+      term.resize(cols, rows);
+    } finally {
+      term.options.scrollback = limit;
+    }
+  }
+
+  // Erasing the whole screen (ED2, what Ctrl+L sends) on the normal screen
+  // first moves the screen's content into the scrollback, as most terminals
+  // do, instead of destroying it; then erases as usual, so the screen is filled
+  // with the current background colour. (xterm's scrollOnEraseInDisplay option
+  // alone skips that fill, which breaks dialog/whiptail backgrounds.) The
+  // alternate screen keeps the plain behaviour.
+  function eraseKeepsScrollback(term) {
+    const ih = term._core && term._core._inputHandler;
+    const raw = term._core && term._core.optionsService && term._core.optionsService.rawOptions;
+    if (!ih || !raw || !('scrollOnEraseInDisplay' in raw) || typeof ih.eraseInDisplay !== 'function') return;
+    term.parser.registerCsiHandler({ final: 'J' }, (params) => {
+      if (params[0] !== 2 || term.buffer.active.type !== 'normal') return false;
+      const before = raw.scrollOnEraseInDisplay;
+      try {
+        raw.scrollOnEraseInDisplay = true;
+        ih.eraseInDisplay({ params: [2], length: 1 });
+      } finally {
+        raw.scrollOnEraseInDisplay = before;
+      }
+      ih.eraseInDisplay({ params: [2], length: 1 });
+      return true;
+    });
+  }
+
   // Everything both sides apply to every terminal.
   function hardenTerminal(term) {
     clampRepeatCounts(term);
@@ -238,12 +285,13 @@
     limitPaletteSequences(term);
     capStringPayloads(term);
     capCombiningMarks(term);
+    eraseKeepsScrollback(term);
     guardParser(term);
   }
 
   const api = {
     clampRepeatCounts, dropHyperlinks, limitPaletteSequences, capStringPayloads, capCombiningMarks,
-    throttleRestyles, guardParser, hardenTerminal,
+    throttleRestyles, guardParser, hardenTerminal, safeResize, eraseKeepsScrollback,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else Object.assign(root, api);

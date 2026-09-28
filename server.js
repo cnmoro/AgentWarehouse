@@ -6,7 +6,7 @@ const { execFileSync } = require('child_process');
 const express = require('express');
 const { WebSocketServer } = require('ws');
 const { checkCredentials, loadUsers, SessionStore, LoginLimiter } = require('./lib/auth');
-const { TerminalManager } = require('./lib/terminals');
+const { TerminalManager, SCROLLBACK } = require('./lib/terminals');
 
 // Configuration errors exit with 78 (EX_CONFIG); the systemd unit does not
 // restart on that code, since retrying cannot help.
@@ -18,7 +18,6 @@ const TAILSCALE = tailscaleSelf();
 const HOST = process.env.HOST || (TRUST_PROXY ? '127.0.0.1' : TAILSCALE.ipv4 || '127.0.0.1');
 const COOKIE = 'wt_sid';
 const MAX_WS_BUFFER = 16 * 1024 * 1024;
-const SCROLLBACK = Number(process.env.SCROLLBACK || 10000);
 
 function tailscaleSelf() {
   try {

@@ -71,7 +71,7 @@ The terminal itself keeps the last 10,000 lines (`SCROLLBACK`). Everything older
 - The history view draws only the rows on screen and fetches the rest from the server as you scroll, so a million lines cost about as much as a hundred. Colours are kept.
 - Search with the box at the top: Enter finds the next older match, Shift+Enter the next newer one; it wraps around at the ends. Searching a million lines takes a fraction of a second.
 - Select and copy text as on any web page. Long lines that the terminal wrapped are copied as one line.
-- `clear` and `reset` erase the history too, as they erase the scrollback in any terminal. The history survives a server restart (the programs that produced it do not). Closing a tab deletes its history.
+- Ctrl+L (erase the screen) moves the screen's content into the scrollback instead of destroying it, as most terminals do. `clear` and `reset` erase the history too, as they erase the scrollback in any terminal. The history survives a server restart (the programs that produced it do not). Closing a tab deletes its history.
 
 History is stored in `data/history/<tab>/` (readable only by you). Each tab keeps at most `HISTORY_LINES` lines (default 200,000) and `HISTORY_MB` megabytes (default 64); the oldest lines are dropped beyond either limit. Plain text needs about 10–20 MB for 200,000 lines; heavily coloured output reaches the megabyte limit sooner. Set `HISTORY_LINES=0` to turn history off. If the disk fills up, history stops for that tab and the terminal carries on. Archiving costs some throughput during extreme output floods (about 25% at a full-speed `cat` of a log), none at normal use.
 

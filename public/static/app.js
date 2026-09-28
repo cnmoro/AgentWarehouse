@@ -1,5 +1,5 @@
 'use strict';
-/* global Terminal, FitAddon, WebLinksAddon, WebglAddon, Unicode11Addon, hardenTerminal, throttleRestyles */
+/* global Terminal, FitAddon, WebLinksAddon, WebglAddon, Unicode11Addon, hardenTerminal, throttleRestyles, safeResize */
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -317,7 +317,7 @@ function fitActive() {
   if (!v || !v.el.classList.contains('visible')) return;
   const size = fittedSize(v);
   if (!size) return;
-  if (size.cols !== v.term.cols || size.rows !== v.term.rows) v.term.resize(size.cols, size.rows);
+  safeResize(v.term, size.cols, size.rows);
   send({ t: 'resize', id: state.active, cols: size.cols, rows: size.rows });
 }
 
@@ -403,7 +403,7 @@ function onOutput(id, d) {
 // program draws; this browser takes the size back when it is used again.
 function onSize({ id, cols, rows }) {
   const v = state.views.get(id);
-  if (v && (v.term.cols !== cols || v.term.rows !== rows)) v.term.resize(cols, rows);
+  if (v) safeResize(v.term, cols, rows);
 }
 
 function markActivity(id) {
@@ -936,7 +936,7 @@ function histPump() {
     const arr = hist.pages.get(page) || [];
     let first = 0;
     if (hist.stale.has(page) && hist.info) {
-      first = Math.max(0, Math.min(HIST_PAGE - 1, hist.info.archived - page * HIST_PAGE));
+      first = Math.max(0, Math.min(HIST_PAGE - 1, (hist.staleFrom ?? hist.info.archived) - page * HIST_PAGE));
     } else {
       while (first < HIST_PAGE && arr[first] !== undefined) first++;
       if (first >= HIST_PAGE) continue;
@@ -958,11 +958,16 @@ function histSetInfo(info) {
     hist.queue = [];
     for (const r of histEls.rows.children) r.dataset.key = '';
     hist.stale.clear();
-  } else if (info.archived < info.total) {
-    // The lines after the archive are the live screen and can still change
-    // (clear, progress bars): mark their pages stale. They keep showing until
-    // fresh copies arrive, so nothing flickers.
-    const firstLive = Math.floor(info.archived / HIST_PAGE);
+    hist.staleFrom = null;
+  } else {
+    // Lines at or after the archive boundary are the live screen and can still
+    // change (clear, progress bars), and lines fetched while live may have been
+    // archived in their final form since: mark those pages stale from the
+    // lower of the old and new boundary. They keep showing until fresh copies
+    // arrive, so nothing flickers.
+    const boundary = Math.min(info.archived, hist.info.archived);
+    hist.staleFrom = Math.min(hist.staleFrom ?? boundary, boundary);
+    const firstLive = Math.floor(boundary / HIST_PAGE);
     for (const p of hist.pages.keys()) if (p >= firstLive) hist.stale.add(p);
   }
   hist.info = info;
@@ -987,6 +992,7 @@ function onHistLines(msg) {
   }
   hist.requested.delete(Math.floor(msg.from / HIST_PAGE));
   hist.stale.delete(Math.floor(msg.from / HIST_PAGE));
+  if (!hist.stale.size) hist.staleFrom = null;
   histPump();
   if (atBottom && hist.stick) histScrollToLine(hist.info.total - 1, 'bottom');
   else histRender();
@@ -1073,6 +1079,7 @@ function histOpen(line = null, where = 'bottom') {
   hist.requested.clear();
   hist.queue = [];
   hist.stale.clear();
+  hist.staleFrom = null;
   hist.found = -1;
   hist.statusMsg = '';
   hist.stick = line === null;
