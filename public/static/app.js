@@ -1,5 +1,5 @@
 'use strict';
-/* global Terminal, FitAddon, WebLinksAddon, WebglAddon, Unicode11Addon, hardenTerminal */
+/* global Terminal, FitAddon, WebLinksAddon, WebglAddon, Unicode11Addon, hardenTerminal, throttleRestyles */
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -216,6 +216,7 @@ function createView(id) {
   term.unicode.activeVersion = '11';
   silenceQueries(term);
   hardenTerminal(term);
+  throttleRestyles(term);
   term.open(el);
 
   term.attachCustomKeyEventHandler((e) => handleKey(term, e));
