@@ -1,0 +1,18 @@
+# User service. Install with:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/web-terminal.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now web-terminal
+#   loginctl enable-linger $USER   # keep it running after you log out
+[Unit]
+Description=Web Terminal
+After=network-online.target tailscaled.service
+
+[Service]
+WorkingDirectory=/mnt/dados1/claude-manager
+ExecStart=/usr/bin/node --env-file-if-exists=.env server.js
+Restart=on-failure
+RestartSec=3
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

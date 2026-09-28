@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Web Terminal</title>
+  <link rel="stylesheet" href="/vendor/xterm.css">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="sidebar-head">
+        <div class="brand"><span class="brand-mark">&gt;_</span> Terminals</div>
+        <button id="new-tab" class="icon-btn" title="New terminal (in the current tab's folder)" aria-label="New terminal">+</button>
+      </div>
+      <ul id="tabs" role="tablist"></ul>
+      <div class="sidebar-foot">
+        <span id="conn" class="conn" title="Connection"></span>
+        <span id="who" class="who"></span>
+        <button id="logout" class="link-btn">Sign out</button>
+      </div>
+    </aside>
+    <main id="main">
+      <button id="toggle-sidebar" class="icon-btn toggle" title="Show/hide sidebar" aria-label="Toggle sidebar">☰</button>
+      <div id="terms"></div>
+      <div id="empty" class="empty" hidden><span>No terminals. Press <b>+</b> to open one.</span></div>
+    </main>
+  </div>
+  <script src="/vendor/xterm.js"></script>
+  <script src="/vendor/addon-fit.js"></script>
+  <script src="/vendor/addon-web-links.js"></script>
+  <script src="/vendor/addon-webgl.js"></script>
+  <script src="/vendor/addon-unicode11.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Web Terminal</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="login-page">
+  <form id="login" class="login-card" autocomplete="on">
+    <div class="brand"><span class="brand-mark">&gt;_</span> Web Terminal</div>
+    <label>Email
+      <input type="email" name="email" autocomplete="username" required autofocus>
+    </label>
+    <label>Password
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
+    <p id="error" class="error" role="alert" hidden></p>
+    <button type="submit">Sign in</button>
+  </form>
+  <script src="/static/login.js"></script>
+</body>
+</html>
