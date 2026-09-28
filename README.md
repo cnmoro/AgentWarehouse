@@ -75,7 +75,8 @@ Some terminal features are limited on purpose, because programs (or files you `c
 
 - OSC 8 hyperlinks are ignored. Plain URLs in the output are still clickable.
 - Escape strings (titles, clipboard, sixel, etc.) over 64 KB and colour palette sequences over 16 KB are ignored.
-- A character cell holds at most 6 UTF-16 code units (a letter with up to five accents), or 16 for emoji sequences (enough for family emoji and flags). Extra combining marks are dropped.
+- A character cell holds at most 6 UTF-16 code units (a letter with up to five accents). Emoji sequences can grow to 16 units with emoji parts (joiners, skin tones, tags), which covers family emoji and flags. Extra combining marks are dropped.
+- Megabytes of deliberately unusual glyphs (thousands of distinct mark stacks) can still pause the visible tab for about a second while the browser draws them. The server and other tabs are not affected.
 - Huge repeat counts in scroll, insert/delete-line, tab and repeat-character sequences are cut to the screen size.
 - In the browser, colour changes and cursor-blink changes are rate-limited during floods.
 - Answers to terminal queries (cursor position, colours, etc.) are dropped while more than about a thousand are waiting for a program that isn't reading them.

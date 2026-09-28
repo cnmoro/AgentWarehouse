@@ -194,7 +194,11 @@
   // Decided by the cluster's first character only: a ZWJ or VS16 further in
   // must not unlock the larger limit for a stack of accents.
   const EMOJI_BASE = /^(?:\p{Extended_Pictographic}|[\u{1F1E6}-\u{1F1FF}])/u;
-  const clusterLimit = (cluster) => (EMOJI_BASE.test(cluster) ? MAX_CLUSTER : MAX_TEXT_CLUSTER);
+  // Past the text limit, an emoji cluster may only grow by emoji parts: ZWJ,
+  // variation selectors, skin tones, tags, keycap, pictographs, regional indicators.
+  const EMOJI_PART = /^(?:[\u200d\ufe0e\ufe0f\u20e3]|[\u{1F3FB}-\u{1F3FF}]|[\u{E0020}-\u{E007F}]|\p{Extended_Pictographic}|[\u{1F1E6}-\u{1F1FF}])$/u;
+  const clusterLimit = (cluster, codePoint) => (cluster.length < MAX_TEXT_CLUSTER ? MAX_TEXT_CLUSTER
+    : EMOJI_BASE.test(cluster) && EMOJI_PART.test(String.fromCodePoint(codePoint)) ? MAX_CLUSTER : MAX_TEXT_CLUSTER);
   const IS_COMBINED = 0x200000;
   const WIDTH_BITS = 0xC00000;
   const interned = new Map();
@@ -206,7 +210,7 @@
     proto.addCodepointToCell = function (index, codePoint, width) {
       const content = this._data[index * 3];
       const cluster = (content & IS_COMBINED) && this._combined[index];
-      if (cluster && cluster.length >= clusterLimit(cluster)) {
+      if (cluster && cluster.length >= clusterLimit(cluster, codePoint)) {
         if (width) this._data[index * 3] = (content & ~WIDTH_BITS) | (width << 22);
         return;
       }
