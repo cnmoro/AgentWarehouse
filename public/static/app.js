@@ -118,6 +118,9 @@ function connect() {
       case 'created': activate(msg.id); break;
       case 'error': toast(msg.msg); break;
       case 'pong': state.lastPong = Date.now(); break;
+      case 'histInfo': onHistInfo(msg); break;
+      case 'histLines': onHistLines(msg); break;
+      case 'histFound': onHistFound(msg); break;
     }
   };
 
@@ -229,6 +232,8 @@ function createView(id) {
     sendInput(id, d);
   });
   term.onBinary((d) => sendInput(id, d, 'bin'));
+  // Scrolled to the very top: offer the older history, if there is any.
+  term.onScroll(() => updateHistPill(id));
 
   addTouchScroll(el, term);
 
@@ -413,6 +418,8 @@ function activate(id) {
     prev.el.classList.remove('visible');
     setWebgl(prev, false);
   }
+  if (hist.open && hist.id !== id) histClose();
+  hideHistPill();
   state.active = id;
   storage('wt.active', id);
 
@@ -506,6 +513,12 @@ function handleKey(term, e) {
   // into input (with bracketed-paste markers when the program asks for them).
   if (mod && !e.altKey && e.code === 'KeyV') return false;
 
+  // Ctrl+Shift+H: full history of this terminal, beyond the scrollback.
+  if (mod && e.shiftKey && !e.altKey && e.code === 'KeyH') {
+    histOpen();
+    e.preventDefault();
+    return false;
+  }
   // Ctrl+Shift+E: jump to the tab list (Tab itself belongs to the shell).
   if (mod && e.shiftKey && !e.altKey && e.code === 'KeyE') {
     if (appEl.classList.contains('collapsed')) setSidebar(true);
@@ -567,7 +580,17 @@ function renderTabs() {
     close.tabIndex = -1;
     close.setAttribute('aria-label', `Close ${t.name}`);
     close.onclick = (e) => { e.stopPropagation(); closeTab(t.id); };
-    actions.append(ren, close);
+    const histBtn = document.createElement('button');
+    histBtn.textContent = '⏱';
+    histBtn.title = 'Full history (Ctrl+Shift+H)';
+    histBtn.tabIndex = -1;
+    histBtn.setAttribute('aria-label', `History of ${t.name}`);
+    histBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (t.id !== state.active) activate(t.id);
+      histOpen();
+    };
+    actions.append(histBtn, ren, close);
 
     li.append(dot, name, actions);
     li.onclick = () => activate(t.id);
@@ -722,6 +745,389 @@ tabsEl.addEventListener('dragover', (e) => { if (dragId) e.preventDefault(); });
 tabsEl.addEventListener('drop', (e) => {
   e.preventDefault();
   if (dragId) moveTab(null, 'end');
+});
+
+// ------------------------------------------------------------------ long-term history
+//
+// The terminal keeps a limited scrollback; older lines live on the server
+// (lib/history.js). This viewer shows all of it, fetching pages of lines as
+// they scroll into view and drawing only the visible rows.
+
+const HIST_PAGE = 200;
+const HIST_MAX_PX = 15_000_000; // stay well below browsers' element height limits
+const hist = {
+  open: false, id: null, info: null, pages: new Map(), requested: new Set(),
+  rowH: 18, found: -1, searchSeq: 0, stick: true, poll: null, pendingJump: null,
+};
+const histEls = {
+  root: $('#history'), scroll: $('#hist-scroll'), spacer: $('#hist-spacer'), rows: $('#hist-rows'),
+  q: $('#hist-q'), status: $('#hist-status'), pill: $('#histpill'),
+};
+
+function paletteCss(n) {
+  const ansi = [THEME.black, THEME.red, THEME.green, THEME.yellow, THEME.blue, THEME.magenta, THEME.cyan, THEME.white,
+    THEME.brightBlack, THEME.brightRed, THEME.brightGreen, THEME.brightYellow, THEME.brightBlue, THEME.brightMagenta,
+    THEME.brightCyan, THEME.brightWhite];
+  if (n < 16) return ansi[n];
+  if (n < 232) {
+    const c = n - 16;
+    const level = (v) => (v === 0 ? 0 : 55 + v * 40);
+    return `rgb(${level(Math.floor(c / 36))},${level(Math.floor(c / 6) % 6)},${level(c % 6)})`;
+  }
+  const g = 8 + (n - 232) * 10;
+  return `rgb(${g},${g},${g})`;
+}
+
+// Records are "<flag><text with SGR sequences>" (see lib/terminals.js).
+function renderRecord(record, el) {
+  el.textContent = '';
+  const st = { fg: null, bg: null, bold: false, dim: false, italic: false, under: false, inverse: false, hidden: false, strike: false, over: false };
+  const put = (text) => {
+    if (!text) return;
+    const plain = st.fg === null && st.bg === null && !st.bold && !st.dim && !st.italic && !st.under
+      && !st.inverse && !st.hidden && !st.strike && !st.over;
+    if (plain) { el.appendChild(document.createTextNode(text)); return; }
+    const span = document.createElement('span');
+    span.textContent = text;
+    let fg = st.fg;
+    let bg = st.bg;
+    if (st.inverse) { [fg, bg] = [bg || THEME.background, fg || THEME.foreground]; }
+    if (fg) span.style.color = fg;
+    if (bg) span.style.backgroundColor = bg;
+    if (st.bold) span.style.fontWeight = 'bold';
+    if (st.dim) span.style.opacity = '0.6';
+    if (st.italic) span.style.fontStyle = 'italic';
+    const deco = [st.under && 'underline', st.strike && 'line-through', st.over && 'overline'].filter(Boolean);
+    if (deco.length) span.style.textDecoration = deco.join(' ');
+    if (st.hidden) span.style.visibility = 'hidden';
+    el.appendChild(span);
+  };
+  const sgr = (params) => {
+    const p = params === '' ? [0] : params.split(';').map(Number);
+    for (let i = 0; i < p.length; i++) {
+      const v = p[i];
+      if (v === 0) Object.assign(st, { fg: null, bg: null, bold: false, dim: false, italic: false, under: false, inverse: false, hidden: false, strike: false, over: false });
+      else if (v === 1) st.bold = true;
+      else if (v === 2) st.dim = true;
+      else if (v === 3) st.italic = true;
+      else if (v === 4) st.under = true;
+      else if (v === 7) st.inverse = true;
+      else if (v === 8) st.hidden = true;
+      else if (v === 9) st.strike = true;
+      else if (v === 53) st.over = true;
+      else if (v >= 30 && v <= 37) st.fg = paletteCss(v - 30);
+      else if (v >= 90 && v <= 97) st.fg = paletteCss(v - 90 + 8);
+      else if (v >= 40 && v <= 47) st.bg = paletteCss(v - 40);
+      else if (v >= 100 && v <= 107) st.bg = paletteCss(v - 100 + 8);
+      else if (v === 39) st.fg = null;
+      else if (v === 49) st.bg = null;
+      else if (v === 38 || v === 48) {
+        let color = null;
+        if (p[i + 1] === 5) { color = paletteCss(p[i + 2] & 255); i += 2; }
+        else if (p[i + 1] === 2) { color = `rgb(${p[i + 2] & 255},${p[i + 3] & 255},${p[i + 4] & 255})`; i += 4; }
+        if (v === 38) st.fg = color; else st.bg = color;
+      }
+    }
+  };
+  const re = /\x1b\[([0-9;]*)m/g;
+  let last = 1;
+  for (let m = re.exec(record); m; m = re.exec(record)) {
+    put(record.slice(last, m.index));
+    sgr(m[1]);
+    last = re.lastIndex;
+  }
+  put(record.slice(last));
+  if (!el.firstChild) el.appendChild(document.createTextNode(' ')); // keep the row's height
+}
+
+function histGeometry() {
+  const info = hist.info;
+  const count = info ? Math.max(0, info.total - info.start) : 0;
+  const viewH = histEls.scroll.clientHeight;
+  const visible = Math.max(1, Math.ceil(viewH / hist.rowH));
+  const exactH = count * hist.rowH;
+  const height = Math.min(exactH, HIST_MAX_PX);
+  const maxScroll = Math.max(0, height - viewH);
+  // Beyond HIST_MAX_PX the scrollbar is proportional instead of exact.
+  const maxFirst = Math.max(0, count - visible);
+  return { count, viewH, visible, height, maxScroll, maxFirst, exact: exactH <= HIST_MAX_PX };
+}
+
+function histFirstLine(g) {
+  const top = histEls.scroll.scrollTop;
+  const rel = g.exact ? top / hist.rowH : (g.maxScroll ? (top / g.maxScroll) * g.maxFirst : 0);
+  return { line: hist.info.start + Math.floor(rel), frac: g.exact ? top % hist.rowH : 0 };
+}
+
+function histScrollToLine(line, where = 'top') {
+  const g = histGeometry();
+  let rel = line - hist.info.start;
+  if (where === 'center') rel -= Math.floor(g.visible / 2);
+  if (where === 'bottom') rel -= Math.max(1, Math.floor(g.viewH / hist.rowH)) - 1; // last fully visible row
+  rel = Math.max(0, Math.min(g.maxFirst, rel));
+  histEls.spacer.style.height = `${g.height}px`; // before scrolling, or the browser clamps to the old height
+  histEls.scroll.scrollTop = g.exact ? rel * hist.rowH : (g.maxFirst ? (rel / g.maxFirst) * g.maxScroll : 0);
+  histRender();
+}
+
+function histRender() {
+  if (!hist.open || !hist.info) return;
+  const g = histGeometry();
+  if (histEls.spacer.style.height !== `${g.height}px`) histEls.spacer.style.height = `${g.height}px`;
+  const { line: first, frac } = histFirstLine(g);
+  const last = Math.min(hist.info.total, first + g.visible + 1);
+  histEls.rows.style.transform = `translateY(${histEls.scroll.scrollTop - frac}px)`;
+  const rows = histEls.rows;
+  while (rows.children.length < last - first) {
+    const div = document.createElement('div');
+    div.className = 'hrow';
+    rows.appendChild(div);
+  }
+  while (rows.children.length > Math.max(0, last - first)) rows.lastChild.remove();
+  for (let n = first; n < last; n++) {
+    const div = rows.children[n - first];
+    const page = Math.floor(n / HIST_PAGE);
+    const lines = hist.pages.get(page);
+    const record = lines && lines[n - page * HIST_PAGE];
+    const key = record === undefined ? `?${n}` : `${n}`;
+    if (div.dataset.key !== key) {
+      div.dataset.key = key;
+      if (record === undefined) {
+        div.className = 'hrow loading';
+        div.textContent = '…';
+        histFetch(page);
+      } else {
+        div.className = 'hrow';
+        renderRecord(record, div);
+      }
+      div.dataset.line = String(n);
+      div.dataset.wrapped = record && record[0] === 'w' ? '1' : '';
+    }
+    div.classList.toggle('found', n === hist.found);
+  }
+  const at = Math.min(hist.info.total, first + 1);
+  histEls.status.textContent = hist.statusMsg
+    || `Line ${(at - hist.info.start).toLocaleString()} of ${(hist.info.total - hist.info.start).toLocaleString()}`;
+  // Keep a little cache around the view, drop the rest.
+  if (hist.pages.size > 60) {
+    const keep = Math.floor(first / HIST_PAGE);
+    for (const p of hist.pages.keys()) if (Math.abs(p - keep) > 10) hist.pages.delete(p);
+  }
+}
+
+function histFetch(page) {
+  if (hist.requested.has(page)) return;
+  hist.requested.add(page);
+  send({ t: 'hist', id: hist.id, from: page * HIST_PAGE, count: HIST_PAGE });
+}
+
+function histSetInfo(info) {
+  if (!hist.info || info.epoch !== hist.info.epoch) {
+    // Line numbers moved (clear, resize): everything cached is stale.
+    hist.pages.clear();
+    hist.requested.clear();
+    for (const r of histEls.rows.children) r.dataset.key = '';
+  }
+  hist.info = info;
+}
+
+function onHistLines(msg) {
+  if (!hist.open || msg.id !== hist.id) return;
+  if (hist.info && msg.info.epoch !== hist.info.epoch) {
+    histSetInfo(msg.info);
+    histRender();
+    return;
+  }
+  const atBottom = histAtBottom();
+  histSetInfo(msg.info);
+  // File each line under its page (the server may have clipped the start).
+  for (let k = 0; k < msg.lines.length; k++) {
+    const abs = msg.from + k;
+    const page = Math.floor(abs / HIST_PAGE);
+    let arr = hist.pages.get(page);
+    if (!arr) hist.pages.set(page, (arr = []));
+    arr[abs - page * HIST_PAGE] = msg.lines[k];
+  }
+  const firstPage = Math.floor(msg.from / HIST_PAGE);
+  const lastPage = Math.floor((msg.from + Math.max(0, msg.lines.length - 1)) / HIST_PAGE);
+  for (let p = firstPage; p <= lastPage; p++) hist.requested.delete(p);
+  hist.requested.delete(Math.floor(msg.from / HIST_PAGE));
+  if (atBottom && hist.stick) histScrollToLine(hist.info.total - 1, 'bottom');
+  else histRender();
+}
+
+function histAtBottom() {
+  const el = histEls.scroll;
+  return el.scrollHeight - el.clientHeight - el.scrollTop < hist.rowH * 2;
+}
+
+function onHistInfo(msg) {
+  if (msg.id === state.active && histEls.pill.dataset.waiting === '1') {
+    histEls.pill.dataset.waiting = '';
+    const older = msg.info.archived - msg.info.start;
+    const v = state.views.get(state.active);
+    if (older > 0 && v && v.term.buffer.active.viewportY === 0 && v.term.buffer.active.type === 'normal') {
+      histEls.pill.textContent = `↑ ${older.toLocaleString()} older lines · Open history (Ctrl+Shift+H)`;
+      histEls.pill.dataset.line = String(msg.info.archived - 1);
+      histEls.pill.hidden = false;
+    }
+  }
+  if (!hist.open || msg.id !== hist.id) return;
+  const atBottom = histAtBottom();
+  const grew = !hist.info || msg.info.total !== hist.info.total;
+  histSetInfo(msg.info);
+  if (hist.pendingJump !== null) {
+    const { line, where } = hist.pendingJump;
+    hist.pendingJump = null;
+    histScrollToLine(line, where);
+    return;
+  }
+  if (grew) {
+    // The newest page is still filling up; refetch it.
+    const lastPage = Math.floor((hist.info.total - 1) / HIST_PAGE);
+    hist.pages.delete(lastPage);
+    hist.requested.delete(lastPage);
+  }
+  if (atBottom && hist.stick) histScrollToLine(hist.info.total - 1, 'bottom');
+  else histRender();
+}
+
+function onHistFound(msg) {
+  if (!hist.open || msg.id !== hist.id || msg.seq !== hist.searchSeq) return;
+  if (msg.info) histSetInfo(msg.info);
+  if (msg.line >= 0) {
+    hist.found = msg.line;
+    hist.statusMsg = hist.wrapped ? (hist.searchDir < 0 ? 'Wrapped to the newest line' : 'Wrapped to the oldest line') : '';
+    hist.stick = false;
+    histScrollToLine(msg.line, 'center');
+  } else if (!hist.wrapped && hist.info) {
+    // Nothing further in this direction: continue from the other end once.
+    hist.wrapped = true;
+    hist.searchSeq++;
+    const from = hist.searchDir < 0 ? hist.info.total : hist.info.start - 1;
+    send({ t: 'histSearch', id: hist.id, q: hist.searchQ, from: Math.max(-1, from), dir: hist.searchDir, seq: hist.searchSeq });
+  } else {
+    hist.statusMsg = 'No matches';
+    histRender();
+  }
+}
+
+function updateHistPill(id) {
+  if (id !== state.active || hist.open) return;
+  const v = state.views.get(id);
+  const buf = v && v.term.buffer.active;
+  if (buf && buf.type === 'normal' && buf.viewportY === 0 && buf.baseY > 0) {
+    if (histEls.pill.hidden && histEls.pill.dataset.waiting !== '1') {
+      histEls.pill.dataset.waiting = '1';
+      send({ t: 'histInfo', id });
+    }
+  } else {
+    hideHistPill();
+  }
+}
+
+function hideHistPill() {
+  histEls.pill.hidden = true;
+  histEls.pill.dataset.waiting = '';
+}
+
+function histOpen(line = null, where = 'bottom') {
+  const v = state.views.get(state.active);
+  if (!v || !state.connected) return;
+  hideHistPill();
+  hist.open = true;
+  hist.id = state.active;
+  hist.info = null;
+  hist.pages.clear();
+  hist.requested.clear();
+  hist.found = -1;
+  hist.statusMsg = '';
+  hist.stick = line === null;
+  hist.pendingJump = line === null ? { line: Number.MAX_SAFE_INTEGER, where: 'bottom' } : { line, where };
+  const cell = v.term._core && v.term._core._renderService && v.term._core._renderService.dimensions.css.cell;
+  hist.rowH = (cell && cell.height) || Math.round(state.fontSize * 1.3);
+  histEls.rows.style.fontSize = `${state.fontSize}px`;
+  histEls.rows.style.lineHeight = `${hist.rowH}px`;
+  histEls.rows.textContent = '';
+  histEls.root.hidden = false;
+  histEls.scroll.focus();
+  send({ t: 'histInfo', id: hist.id });
+  clearInterval(hist.poll);
+  hist.poll = setInterval(() => { if (hist.open) send({ t: 'histInfo', id: hist.id }); }, 1000);
+}
+
+function histClose() {
+  if (!hist.open) return;
+  hist.open = false;
+  clearInterval(hist.poll);
+  histEls.root.hidden = true;
+  histEls.rows.textContent = '';
+  hist.pages.clear();
+  focusActive();
+}
+
+function histSearch(dir) {
+  const q = histEls.q.value.trim();
+  if (!q || !hist.info) return;
+  const g = histGeometry();
+  const from = hist.found >= 0 ? hist.found
+    : dir < 0 ? histFirstLine(g).line + g.visible : histFirstLine(g).line - 1;
+  hist.searchSeq++;
+  hist.searchQ = q;
+  hist.searchDir = dir;
+  hist.wrapped = false;
+  hist.statusMsg = 'Searching…';
+  histRender();
+  send({ t: 'histSearch', id: hist.id, q, from: Math.max(0, from), dir, seq: hist.searchSeq });
+}
+
+histEls.scroll.addEventListener('scroll', () => {
+  hist.stick = histAtBottom();
+  requestAnimationFrame(histRender);
+}, { passive: true });
+new ResizeObserver(() => { if (hist.open) histRender(); }).observe(histEls.scroll);
+
+histEls.pill.onclick = () => histOpen(Number(histEls.pill.dataset.line), 'bottom');
+$('#hist-close').onclick = histClose;
+$('#hist-bottom').onclick = () => {
+  hist.stick = true;
+  hist.found = -1;
+  if (hist.info) histScrollToLine(hist.info.total - 1, 'bottom');
+  histEls.scroll.focus();
+};
+histEls.q.addEventListener('input', () => { hist.found = -1; hist.statusMsg = ''; });
+histEls.q.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); histSearch(e.shiftKey ? 1 : -1); }
+  if (e.key === 'Escape') { e.preventDefault(); if (histEls.q.value) histEls.q.value = ''; else histClose(); }
+});
+histEls.root.addEventListener('keydown', (e) => {
+  if (e.target === histEls.q) return;
+  const mod = isMac ? e.metaKey : e.ctrlKey;
+  if (e.key === 'Escape' || (mod && e.shiftKey && e.code === 'KeyH')) { e.preventDefault(); histClose(); return; }
+  if (mod && e.code === 'KeyF') { e.preventDefault(); histEls.q.focus(); histEls.q.select(); return; }
+  if (!hist.info) return;
+  const g = histGeometry();
+  const first = histFirstLine(g).line;
+  const jump = { Home: [hist.info.start, 'top'], End: [hist.info.total - 1, 'bottom'],
+    PageUp: [first - g.visible + 1, 'top'], PageDown: [first + g.visible - 1, 'top'] }[e.key];
+  if (jump) {
+    e.preventDefault();
+    hist.stick = e.key === 'End';
+    histScrollToLine(jump[0], jump[1]);
+  }
+});
+
+// Copying across a wrapped line should give one line, as in the terminal.
+histEls.rows.addEventListener('copy', (e) => {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) return;
+  const rows = [...histEls.rows.children].filter((r) => sel.containsNode(r, true));
+  const parts = sel.toString().split('\n');
+  if (rows.length !== parts.length) return; // unexpected shape: let the browser copy as is
+  let text = parts[0];
+  for (let i = 1; i < parts.length; i++) text += (rows[i].dataset.wrapped === '1' ? '' : '\n') + parts[i];
+  e.clipboardData.setData('text/plain', text);
+  e.preventDefault();
 });
 
 // ------------------------------------------------------------------ phone key bar

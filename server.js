@@ -70,6 +70,10 @@ for (const name of ['SESSION_TTL_HOURS', 'SESSION_IDLE_HOURS', 'SCROLLBACK', 'PO
     process.exit(EX_CONFIG);
   }
 }
+if (process.env.HISTORY_LINES !== undefined && !(Number(process.env.HISTORY_LINES) >= 0)) {
+  console.error(`HISTORY_LINES must be 0 or a positive number, got "${process.env.HISTORY_LINES}".`);
+  process.exit(EX_CONFIG);
+}
 if (HOST === '0.0.0.0' || HOST === '::') {
   console.warn('WARNING: listening on all interfaces. Anyone who can reach this port gets a login page for a shell.');
 }
@@ -428,6 +432,27 @@ function handleMessage(client, raw) {
     case 'ping':
       send(client, { t: 'pong' });
       break;
+    case 'histInfo':
+      if (tab) send(client, { t: 'histInfo', id: tab.id, info: tab.historyInfo() });
+      break;
+    case 'hist':
+      if (tab && num(msg.from) >= 0) {
+        const r = tab.historyRead(msg.from, Math.min(1000, num(msg.count) || 0));
+        send(client, { t: 'histLines', id: tab.id, from: r.from, lines: r.lines, info: r.info });
+      }
+      break;
+    case 'histSearch': {
+      // One search per connection at a time; each yields between chunks.
+      if (!tab || client.searching || typeof msg.q !== 'string' || !msg.q || msg.q.length > 200) break;
+      if (!(num(msg.from) >= -1) || (msg.dir !== 1 && msg.dir !== -1)) break; // -1: search forward from line 0
+      client.searching = true;
+      const seq = num(msg.seq);
+      tab.historySearch(msg.q, msg.from, msg.dir)
+        .then((line) => send(client, { t: 'histFound', id: tab.id, seq, line, info: tab.historyInfo() }))
+        .catch(() => send(client, { t: 'histFound', id: tab.id, seq, line: -1 }))
+        .finally(() => { client.searching = false; });
+      break;
+    }
   }
 }
 

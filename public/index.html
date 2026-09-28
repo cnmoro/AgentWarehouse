@@ -56,6 +56,20 @@
           <button class="primary new-tab">New terminal</button>
         </div>
       </div>
+      <button id="histpill" class="histpill" hidden></button>
+      <section id="history" class="history" hidden aria-label="Terminal history">
+        <div class="history-bar">
+          <span class="history-title">History</span>
+          <input id="hist-q" type="search" placeholder="Search · Enter older · Shift+Enter newer" aria-label="Search history" autocomplete="off" spellcheck="false">
+          <span id="hist-status" class="history-status" role="status"></span>
+          <button id="hist-bottom" class="link-btn" title="Jump to the latest output (End)">Latest</button>
+          <button id="hist-close" class="icon-btn" title="Close history (Esc)" aria-label="Close history">✕</button>
+        </div>
+        <div id="hist-scroll" class="history-scroll" tabindex="0">
+          <div id="hist-spacer"></div>
+          <div id="hist-rows" class="history-rows"></div>
+        </div>
+      </section>
       <div id="banner" class="banner" role="alert" hidden>Connection lost. Reconnecting… Typing is disabled until then.</div>
       <div id="toast" class="banner toast" role="status" hidden></div>
     </main>

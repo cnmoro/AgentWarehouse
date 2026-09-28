@@ -46,6 +46,7 @@ Open `https://<machine>.<tailnet>.ts.net`. HTTPS certificates must be enabled fo
 | Copy | Select with the mouse, then **Ctrl+C**. With nothing selected, Ctrl+C sends an interrupt as usual. **Ctrl+Shift+C** always copies. |
 | Paste | **Ctrl+V** or **Ctrl+Shift+V**. Bracketed paste is used when the program supports it. |
 | Font size | **Ctrl +**, **Ctrl −**, **Ctrl 0**, or A−/A+ in the sidebar footer |
+| Full history | **Ctrl+Shift+H**, the ⏱ button on a tab, or the button that appears at the top of the scrollback |
 | Hide sidebar | « in the sidebar header. It collapses to a narrow strip; ☰ brings it back. |
 
 On a Mac, use Cmd instead of Ctrl for copy, paste, font size and Ctrl+Shift+E. Ctrl then always goes to the terminal.
@@ -61,6 +62,18 @@ The browser asks before you leave the page, so a stray Ctrl+W (delete word in ba
 A yellow dot on a tab means it printed output since you last looked. A grey dot means the shell exited. Press Enter in that tab to start a new one.
 
 When two browsers show the same terminal, the one you used last sets its size, and the other follows it.
+
+### Long history
+
+The terminal itself keeps the last 10,000 lines (`SCROLLBACK`). Everything older is moved to disk, up to 200,000 lines per tab by default (`HISTORY_LINES`), and loaded only when you look at it:
+
+- Scroll to the top of a terminal and a button offers the older lines. **Ctrl+Shift+H** (or ⏱ on the tab) opens the full history of the tab at any time.
+- The history view draws only the rows on screen and fetches the rest from the server as you scroll, so a million lines cost about as much as a hundred. Colours are kept.
+- Search with the box at the top: Enter finds the next older match, Shift+Enter the next newer one; it wraps around at the ends. Searching a million lines takes a fraction of a second.
+- Select and copy text as on any web page. Long lines that the terminal wrapped are copied as one line.
+- `clear` and `reset` erase the history too, as they erase the scrollback in any terminal. The history survives a server restart (the programs that produced it do not). Closing a tab deletes its history.
+
+History is stored in `data/history/<tab>/` (readable only by you). At the default limit a tab uses about 10–30 MB of disk; the oldest lines are dropped beyond it. Set `HISTORY_LINES=0` to turn it off. Archiving costs some throughput during extreme output floods (about 25% at a full-speed `cat` of a log), none at normal use.
 
 Tab names and working folders are saved to `data/tabs.json`. After a server restart the tabs come back with fresh shells. Running programs do not survive a restart.
 
@@ -106,7 +119,7 @@ npm run set-user -- --remove someone@example.com     # remove a user
 
 ## Configuration
 
-See `.env.example`: `PORT`, `HOST`, `ALLOWED_HOSTS`, `TRUST_PROXY`, `SESSION_TTL_HOURS`, `SESSION_IDLE_HOURS`, `SCROLLBACK`.
+See `.env.example`: `PORT`, `HOST`, `ALLOWED_HOSTS`, `TRUST_PROXY`, `SESSION_TTL_HOURS`, `SESSION_IDLE_HOURS`, `SCROLLBACK`, `HISTORY_LINES`.
 
 ## Layout
 
@@ -114,7 +127,8 @@ See `.env.example`: `PORT`, `HOST`, `ALLOWED_HOSTS`, `TRUST_PROXY`, `SESSION_TTL
 server.js            HTTP routes, login, WebSocket protocol
 lib/auth.js          password hashing, sessions, login throttling
 lib/terminals.js     pty + headless mirror per tab, persistence of tab list
+lib/history.js       on-disk history beyond the scrollback
 scripts/set-user.js  create, update, or remove logins
 public/              login page and the app (plain JS, no build step)
-data/                users.json, tabs.json (git-ignored)
+data/                users.json, tabs.json, history/ (git-ignored)
 ```
