@@ -76,6 +76,7 @@ Some terminal features are limited on purpose, because programs (or files you `c
 - OSC 8 hyperlinks are ignored. Plain URLs in the output are still clickable.
 - Escape strings (titles, clipboard, sixel, etc.) over 64 KB and colour palette sequences over 16 KB are ignored.
 - A character cell holds at most 6 UTF-16 code units (a letter with up to five accents). Emoji sequences can grow to 16 units with emoji parts (joiners, skin tones, tags), which covers family emoji and flags. Extra combining marks are dropped.
+- Resizing a very wide terminal whose whole history is unusual text, or taking a snapshot of a very wide, heavily coloured screen, can pause the server for up to a second or two. This happens once per resize or attach.
 - Megabytes of deliberately unusual glyphs (thousands of distinct mark stacks) can still pause the visible tab for about a second while the browser draws them. The server and other tabs are not affected.
 - Huge repeat counts in scroll, insert/delete-line, tab and repeat-character sequences are cut to the screen size.
 - In the browser, colour changes and cursor-blink changes are rate-limited during floods.
@@ -93,6 +94,8 @@ This page gives full shell access as the user running the server. The defences:
 - Links from terminal output only open if they are `http` or `https`.
 - The WebSocket handshake and the login/logout endpoints reject requests whose `Origin` does not match the host. This blocks cross-site WebSocket hijacking and CSRF.
 - A strict Content-Security-Policy (no inline scripts, no third-party origins), `frame-ancestors 'none'`, and `no-store` caching.
+
+In plain-HTTP mode, browsers send the session cookie to every service on the same address, whatever the port (cookies are not separated by port). Any other web server on this machine's Tailscale IP would receive it. If other people can run services on this machine, use the HTTPS setup with `tailscale serve`, which gives the terminal its own host name.
 
 Manage users:
 
