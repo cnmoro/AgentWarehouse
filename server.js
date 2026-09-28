@@ -8,12 +8,17 @@ const { WebSocketServer } = require('ws');
 const { checkCredentials, loadUsers, SessionStore, LoginLimiter } = require('./lib/auth');
 const { TerminalManager } = require('./lib/terminals');
 
+// Configuration errors exit with 78 (EX_CONFIG); the systemd unit does not
+// restart on that code, since retrying cannot help.
+const EX_CONFIG = 78;
+
 const PORT = Number(process.env.PORT || 7681);
 const TRUST_PROXY = process.env.TRUST_PROXY === '1';
 const TAILSCALE = tailscaleSelf();
 const HOST = process.env.HOST || (TRUST_PROXY ? '127.0.0.1' : TAILSCALE.ipv4 || '127.0.0.1');
 const COOKIE = 'wt_sid';
 const MAX_WS_BUFFER = 16 * 1024 * 1024;
+const SCROLLBACK = Number(process.env.SCROLLBACK || 10000);
 
 function tailscaleSelf() {
   try {
@@ -46,12 +51,24 @@ if (!process.env.HOST && !TRUST_PROXY && !TAILSCALE.ipv4) {
 }
 if (TRUST_PROXY && !isLoopback(HOST)) {
   console.error('TRUST_PROXY=1 requires HOST to be a loopback address, or anyone could forge X-Forwarded-* headers.');
+  process.exit(EX_CONFIG);
+}
+if (TRUST_PROXY && !TAILSCALE.names.length && !process.env.ALLOWED_HOSTS) {
+  // Behind `tailscale serve` the browser uses the MagicDNS name; without it every request would get 421.
+  console.error('Tailscale is not answering yet, so its host name is unknown. Exiting so systemd retries.');
   process.exit(1);
 }
 
 if (Object.keys(loadUsers()).length === 0) {
   console.error('No users configured. Create one first:  npm run set-user');
-  process.exit(1);
+  process.exit(EX_CONFIG);
+}
+for (const name of ['SESSION_TTL_HOURS', 'SESSION_IDLE_HOURS', 'SCROLLBACK', 'PORT']) {
+  const v = process.env[name];
+  if (v !== undefined && !(Number(v) > 0 && Number.isFinite(Number(v)))) {
+    console.error(`${name} must be a positive number, got "${v}".`);
+    process.exit(EX_CONFIG);
+  }
 }
 if (HOST === '0.0.0.0' || HOST === '::') {
   console.warn('WARNING: listening on all interfaces. Anyone who can reach this port gets a login page for a shell.');
@@ -338,7 +355,9 @@ function onConnection(ws, session) {
     ws, sessionId: session.id, email: session.email, subs: new Map(), out: new Map(), flushScheduled: false, resyncs: new Map(),
   };
   clients.add(client);
-  send(client, { t: 'hello', email: session.email });
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK });
   syncClient(client);
 
   ws.on('message', (raw) => {
@@ -425,7 +444,23 @@ setInterval(() => {
 
 // ---------------------------------------------------------------- lifecycle
 
+server.on('error', (err) => {
+  // e.g. port already in use: exit instead of lingering with shells and no listener.
+  console.error(`Cannot listen on ${HOST}:${PORT}: ${err.message}`);
+  process.exit(1);
+});
+
+// Protocol-level pings find connections whose network silently died.
+setInterval(() => {
+  for (const c of clients) {
+    if (c.ws.isAlive === false) { c.ws.terminate(); continue; }
+    c.ws.isAlive = false;
+    c.ws.ping();
+  }
+}, 30_000).unref();
+
 server.listen(PORT, HOST, () => {
+  terminals.start();
   console.log(`Web terminal listening on http://${HOST.includes(':') ? `[${HOST}]` : HOST}:${PORT}`);
   console.log(`Accepted host names: ${[...ALLOWED_HOSTS].join(', ')}`);
 });

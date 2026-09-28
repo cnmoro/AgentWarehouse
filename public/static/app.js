@@ -1,5 +1,5 @@
 'use strict';
-/* global Terminal, FitAddon, WebLinksAddon, WebglAddon, Unicode11Addon */
+/* global Terminal, FitAddon, WebLinksAddon, WebglAddon, Unicode11Addon, clampRepeatCounts */
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -7,6 +7,8 @@ const tabsEl = $('#tabs');
 const termsEl = $('#terms');
 const appEl = $('#app');
 const mobile = window.matchMedia('(max-width: 700px)');
+// On a Mac, Cmd does clipboard and Ctrl belongs to the terminal.
+const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
 const MAX_TABS = 50;
 const INPUT_CHUNK = 256 * 1024;  // keep each message well under the server's frame limit
@@ -34,6 +36,8 @@ const state = {
   retryTimer: null,
   leaving: false,
   fontSize: Number(storage('wt.fontSize')) || 14,
+  scrollback: 10000,    // replaced by the server's value on connect
+  ctrlSticky: false,    // phone key bar: next key is sent with Ctrl
 };
 
 const THEME = {
@@ -89,6 +93,7 @@ function connect() {
   ws.onopen = () => {
     state.retry = 0;
     setConnected(true);
+    startHeartbeat(ws);
     // The server forgot what this page was attached to. Hidden tabs re-attach
     // when next shown; the visible one re-attaches as soon as the list arrives.
     for (const [id, v] of state.views) {
@@ -100,7 +105,11 @@ function connect() {
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     switch (msg.t) {
-      case 'hello': $('#who').textContent = msg.email; $('#who').title = msg.email; break;
+      case 'hello':
+        $('#who').textContent = msg.email;
+        $('#who').title = msg.email;
+        if (msg.scrollback > 0) state.scrollback = msg.scrollback;
+        break;
       case 'list': onList(msg.tabs); break;
       case 'snap': onSnapshot(msg); break;
       case 'out': onOutput(msg.id, msg.d); break;
@@ -108,11 +117,13 @@ function connect() {
       case 'act': markActivity(msg.id); break;
       case 'created': activate(msg.id); break;
       case 'error': toast(msg.msg); break;
+      case 'pong': state.lastPong = Date.now(); break;
     }
   };
 
   ws.onclose = (ev) => {
     if (state.ws !== ws) return;
+    state.ws = null;
     setConnected(false);
     if (ev.code === 4001) { goToLogin(); return; }
     // A rejected handshake (session gone, e.g. after a server restart) looks like
@@ -123,6 +134,22 @@ function connect() {
     const delay = Math.min(8000, 500 * 2 ** state.retry++);
     state.retryTimer = setTimeout(connect, delay);
   };
+}
+
+// A network that dies silently (phone changing networks, laptop lid) leaves
+// the socket "open" for minutes. Ping every 15 s; no answer in 10 s = dead.
+function startHeartbeat(ws) {
+  state.lastPong = Date.now();
+  const timer = setInterval(() => {
+    if (state.ws !== ws || ws.readyState !== WebSocket.OPEN) { clearInterval(timer); return; }
+    if (Date.now() - state.lastPong > 25_000) {
+      clearInterval(timer);
+      ws.close();
+      ws.onclose({ code: 4000 }); // the close handshake itself may never finish
+      return;
+    }
+    send({ t: 'ping' });
+  }, 15_000);
 }
 
 // Reconnect right away instead of waiting out the backoff.
@@ -173,9 +200,11 @@ function createView(id) {
     fontSize: state.fontSize,
     lineHeight: 1.15,
     cursorBlink: true,
-    scrollback: 10000,
+    scrollback: state.scrollback,
     allowProposedApi: true,
     theme: THEME,
+    // Keeps text readable when a program picks colours close to our background.
+    minimumContrastRatio: 4.5,
     macOptionIsMeta: true,
     rightClickSelectsWord: false,
     // OSC 8 hyperlinks from program output: only ever open http(s).
@@ -188,18 +217,51 @@ function createView(id) {
   term.loadAddon(new Unicode11Addon.Unicode11Addon());
   term.unicode.activeVersion = '11';
   silenceQueries(term);
+  clampRepeatCounts(term);
   term.open(el);
 
   term.attachCustomKeyEventHandler((e) => handleKey(term, e));
   term.onData((d) => {
     reclaimSize(id);
+    if (state.ctrlSticky && d.length === 1) {
+      d = ctrlChar(d);
+      setCtrlSticky(false);
+    }
     sendInput(id, d);
   });
   term.onBinary((d) => sendInput(id, d, 'bin'));
 
+  addTouchScroll(el, term);
+
   const view = { id, term, fit, el, webgl: null, attached: false, seq: 0, ackPending: 0, ackTimer: null };
   state.views.set(id, view);
   return view;
+}
+
+// xterm 6 has no touch scrolling of its own. On the normal screen a swipe moves
+// through the history; on the alternate screen (vim, less) it is left alone.
+function addTouchScroll(el, term) {
+  let lastY = null;
+  let carry = 0;
+  el.addEventListener('touchstart', (e) => {
+    lastY = e.touches.length === 1 ? e.touches[0].clientY : null;
+    carry = 0;
+  }, { passive: true });
+  el.addEventListener('touchmove', (e) => {
+    if (lastY === null || e.touches.length !== 1 || term.buffer.active.type !== 'normal') return;
+    const y = e.touches[0].clientY;
+    const cell = el.querySelector('.xterm-rows')?.firstElementChild?.getBoundingClientRect().height
+      || term.options.fontSize * 1.2;
+    carry += (lastY - y) / cell;
+    lastY = y;
+    const lines = Math.trunc(carry);
+    if (lines) {
+      term.scrollLines(lines);
+      carry -= lines;
+    }
+    e.preventDefault();
+  }, { passive: false });
+  el.addEventListener('touchend', () => { lastY = null; }, { passive: true });
 }
 
 function disposeView(id) {
@@ -363,6 +425,8 @@ function onList(tabs) {
   const oldIndex = state.tabs.findIndex((t) => t.id === state.active);
   state.tabs = tabs;
   const ids = new Set(tabs.map((t) => t.id));
+  // The tab being renamed was closed elsewhere: drop the input.
+  if (state.renaming && !ids.has(state.renaming)) state.renaming = null;
   for (const id of [...state.views.keys()]) if (!ids.has(id)) disposeView(id);
   $('#empty').hidden = tabs.length > 0;
 
@@ -419,7 +483,7 @@ function setFontSize(size) {
 // e.key so the shortcuts work on any keyboard layout.
 function handleKey(term, e) {
   if (e.type !== 'keydown') return true;
-  const mod = e.ctrlKey || e.metaKey;
+  const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
 
   // Ctrl+C copies when text is selected; otherwise it goes to the program (SIGINT).
   if (mod && !e.altKey && e.code === 'KeyC' && (e.shiftKey || term.hasSelection())) {
@@ -433,14 +497,15 @@ function handleKey(term, e) {
   if (mod && !e.altKey && e.code === 'KeyV') return false;
 
   // Ctrl+Shift+E: jump to the tab list (Tab itself belongs to the shell).
-  if (e.ctrlKey && e.shiftKey && !e.altKey && e.code === 'KeyE') {
+  if (mod && e.shiftKey && !e.altKey && e.code === 'KeyE') {
     if (appEl.classList.contains('collapsed')) setSidebar(true);
     requestAnimationFrame(() => tabsEl.querySelector('.tab.active')?.focus());
     e.preventDefault();
     return false;
   }
-  // Ctrl+Shift + / − / 0: font size. Plain Ctrl+- is left for programs (undo in readline).
-  if (e.ctrlKey && e.shiftKey && !e.altKey && ['Equal', 'Minus', 'Digit0', 'NumpadAdd', 'NumpadSubtract'].includes(e.code)) {
+  // Ctrl + / − / 0 (Cmd on a Mac): font size instead of zooming the page. The
+  // terminal sends nothing for these; Ctrl+Shift+− (Ctrl+_, undo) still passes.
+  if (mod && !e.shiftKey && !e.altKey && ['Equal', 'Minus', 'Digit0', 'NumpadAdd', 'NumpadSubtract'].includes(e.code)) {
     const delta = { Equal: 1, NumpadAdd: 1, Minus: -1, NumpadSubtract: -1 }[e.code];
     setFontSize(delta ? state.fontSize + delta : 14);
     e.preventDefault();
@@ -648,6 +713,52 @@ tabsEl.addEventListener('drop', (e) => {
   e.preventDefault();
   if (dragId) moveTab(null, 'end');
 });
+
+// ------------------------------------------------------------------ phone key bar
+
+function ctrlChar(ch) {
+  const c = ch.toUpperCase().charCodeAt(0);
+  if (c >= 64 && c <= 95) return String.fromCharCode(c - 64); // @ A-Z [ \ ] ^ _
+  if (ch === ' ') return '\x00';
+  if (ch === '?') return '\x7f';
+  return ch;
+}
+
+function setCtrlSticky(on) {
+  state.ctrlSticky = on;
+  const b = $('#keybar [data-key="ctrl"]');
+  b.classList.toggle('on', on);
+  b.setAttribute('aria-pressed', String(on));
+}
+
+const KEYS = {
+  esc: () => '\x1b',
+  tab: () => '\t',
+  up: (app) => (app ? '\x1bOA' : '\x1b[A'),
+  down: (app) => (app ? '\x1bOB' : '\x1b[B'),
+  right: (app) => (app ? '\x1bOC' : '\x1b[C'),
+  left: (app) => (app ? '\x1bOD' : '\x1b[D'),
+};
+
+for (const btn of $$('#keybar button')) {
+  // pointerdown + preventDefault keeps focus (and the phone keyboard) on the terminal.
+  btn.addEventListener('pointerdown', (e) => e.preventDefault());
+  btn.addEventListener('click', () => {
+    const key = btn.dataset.key;
+    const v = state.views.get(state.active);
+    if (!v || !state.connected) return;
+    if (key === 'ctrl') {
+      setCtrlSticky(!state.ctrlSticky);
+    } else if (KEYS[key]) {
+      sendInput(state.active, KEYS[key](v.term.modes.applicationCursorKeysMode));
+      setCtrlSticky(false);
+    } else {
+      sendInput(state.active, state.ctrlSticky ? ctrlChar(btn.dataset.key) : btn.dataset.key);
+      setCtrlSticky(false);
+    }
+    v.term.focus();
+  });
+}
 
 // ------------------------------------------------------------------ wiring
 

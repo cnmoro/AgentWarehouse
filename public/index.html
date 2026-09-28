@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
   <title>Web Terminal</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230e1116'/%3E%3Cpath d='M8 10l6 6-6 6' stroke='%235fb3ff' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M16 22h8' stroke='%23d6dde6' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/vendor/xterm.css">
   <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -28,8 +29,8 @@
         <span class="conn" role="status" aria-label="Disconnected" title="Disconnected"></span>
         <span id="who" class="who"></span>
         <span class="font-size" role="group" aria-label="Font size">
-          <button id="font-down" class="link-btn" title="Smaller text (Ctrl+Shift+−)" aria-label="Smaller text">A−</button>
-          <button id="font-up" class="link-btn" title="Larger text (Ctrl+Shift++)" aria-label="Larger text">A+</button>
+          <button id="font-down" class="link-btn" title="Smaller text (Ctrl −)" aria-label="Smaller text">A−</button>
+          <button id="font-up" class="link-btn" title="Larger text (Ctrl +)" aria-label="Larger text">A+</button>
         </span>
         <button id="logout" class="link-btn">Sign out</button>
       </div>
@@ -37,6 +38,18 @@
     <div id="backdrop" hidden></div>
     <main id="main">
       <div id="terms"></div>
+      <div id="keybar" role="toolbar" aria-label="Terminal keys">
+        <button data-key="esc">Esc</button>
+        <button data-key="tab">Tab</button>
+        <button data-key="ctrl" aria-pressed="false">Ctrl</button>
+        <button data-key="left" aria-label="Left">←</button>
+        <button data-key="up" aria-label="Up">↑</button>
+        <button data-key="down" aria-label="Down">↓</button>
+        <button data-key="right" aria-label="Right">→</button>
+        <button data-key="|">|</button>
+        <button data-key="~">~</button>
+        <button data-key="/">/</button>
+      </div>
       <div id="empty" class="empty" hidden>
         <div>
           <p>No terminals open.</p>
@@ -52,6 +65,7 @@
   <script src="/vendor/addon-web-links.js"></script>
   <script src="/vendor/addon-webgl.js"></script>
   <script src="/vendor/addon-unicode11.js"></script>
+  <script src="/static/clamp.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

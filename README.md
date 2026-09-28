@@ -9,7 +9,7 @@ Several shells on this machine, open in the browser. Each terminal is a tab in t
 
 ## Setup
 
-Needs Node.js 22 or later. The first install compiles node-pty, so you also need `make`, `g++` and `python3`.
+Needs Node.js 22.9 or later. The first install compiles node-pty, so you also need `make`, `g++` and `python3`.
 
 ```sh
 npm install
@@ -42,13 +42,19 @@ Open `https://<machine>.<tailnet>.ts.net`. HTTPS certificates must be enabled fo
 | Rename | Double-click the name, the ✎ button, or F2. Enter saves, Esc cancels. |
 | Reorder | Drag tabs in the sidebar. |
 | Close | ✕ or Delete. This kills the shell and anything running in it. |
-| Move between tabs | Click, or focus the list and use the arrow keys and Enter. |
+| Move between tabs | Click. From the keyboard: **Ctrl+Shift+E** jumps to the tab list, then arrow keys and Enter; Esc goes back to the terminal. |
 | Copy | Select with the mouse, then **Ctrl+C**. With nothing selected, Ctrl+C sends an interrupt as usual. **Ctrl+Shift+C** always copies. |
 | Paste | **Ctrl+V** or **Ctrl+Shift+V**. Bracketed paste is used when the program supports it. |
-| Font size | **Ctrl+Shift +**, **Ctrl+Shift −**, **Ctrl+Shift 0**, or A−/A+ in the sidebar footer |
+| Font size | **Ctrl +**, **Ctrl −**, **Ctrl 0**, or A−/A+ in the sidebar footer |
 | Hide sidebar | « in the sidebar header. It collapses to a narrow strip; ☰ brings it back. |
 
+On a Mac, use Cmd instead of Ctrl for copy, paste, font size and Ctrl+Shift+E. Ctrl then always goes to the terminal.
+
 Shortcuts match on the physical key, so they work with any keyboard layout. Because Ctrl+V pastes, programs never receive a literal Ctrl+V. In vim, use Ctrl+Q for visual-block mode.
+
+The browser keeps some keys for itself, and they never reach the shell: Ctrl+T, Ctrl+N, Ctrl+Tab, Ctrl+PgUp/PgDn and Ctrl+Shift+T/N/W. Ctrl+W would close the page; you get a confirmation first, but it still does not delete a word. Use Alt+Backspace instead.
+
+On a phone, a row of keys under the terminal gives Esc, Tab, Ctrl (tap it, then a letter), arrows, and a few symbols that are awkward on phone keyboards. Swipe up and down to scroll through the history.
 
 The browser asks before you leave the page, so a stray Ctrl+W (delete word in bash) doesn't close it. The shells keep running either way.
 

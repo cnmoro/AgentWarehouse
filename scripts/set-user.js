@@ -3,7 +3,25 @@
 // Create or update a login.   npm run set-user
 // Remove a login.             npm run set-user -- --remove someone@example.com
 const readline = require('readline');
-const { hashPassword, normalizeEmail, loadUsers, saveUsers } = require('../lib/auth');
+const fs = require('fs');
+const path = require('path');
+const { hashPassword, normalizeEmail, saveUsers } = require('../lib/auth');
+
+const USERS_FILE = path.join(__dirname, '..', 'data', 'users.json');
+
+// Strict read: if the file is damaged, stop rather than overwrite every other account.
+function loadUsers() {
+  let text;
+  try {
+    text = fs.readFileSync(USERS_FILE, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return {};
+    throw err;
+  }
+  const users = JSON.parse(text);
+  if (!users || typeof users !== 'object' || Array.isArray(users)) throw new Error(`${USERS_FILE} is not a JSON object`);
+  return users;
+}
 
 const MIN_LENGTH = 12;
 
@@ -40,6 +58,7 @@ async function main() {
 
   const password = await ask(`Password (min ${MIN_LENGTH} chars): `, { hidden: true });
   if (password.length < MIN_LENGTH) throw new Error(`Password must be at least ${MIN_LENGTH} characters.`);
+  if (password.length > 1024) throw new Error('Password must be at most 1024 characters.');
   if (password.toLowerCase().includes(email.split('@')[0])) throw new Error('Password must not contain the email name.');
   const again = await ask('Repeat password: ', { hidden: true });
   if (again !== password) throw new Error('Passwords do not match.');
