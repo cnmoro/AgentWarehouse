@@ -32,7 +32,7 @@ async function main() {
     if (!users[email]) return console.error(`No user ${email}`);
     delete users[email];
     saveUsers(users);
-    return console.log(`Removed ${email}. Restart the server to end their active sessions.`);
+    return console.log(`Removed ${email}. Their open sessions end within 10 seconds.`);
   }
 
   const email = normalizeEmail(await ask('Email: '));
@@ -46,7 +46,7 @@ async function main() {
 
   users[email] = { hash: await hashPassword(password), updated: new Date().toISOString() };
   saveUsers(users);
-  console.log(`Saved ${email}.`);
+  console.log(`Saved ${email}. Any sessions signed in with an older password end within 10 seconds.`);
 }
 
 main().catch((err) => {

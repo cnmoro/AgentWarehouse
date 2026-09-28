@@ -1,5 +1,6 @@
 'use strict';
 const http = require('http');
+const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const express = require('express');
@@ -9,16 +10,43 @@ const { TerminalManager } = require('./lib/terminals');
 
 const PORT = Number(process.env.PORT || 7681);
 const TRUST_PROXY = process.env.TRUST_PROXY === '1';
-const HOST = process.env.HOST || (TRUST_PROXY ? '127.0.0.1' : tailscaleIp() || '127.0.0.1');
+const TAILSCALE = tailscaleSelf();
+const HOST = process.env.HOST || (TRUST_PROXY ? '127.0.0.1' : TAILSCALE.ipv4 || '127.0.0.1');
 const COOKIE = 'wt_sid';
 const MAX_WS_BUFFER = 16 * 1024 * 1024;
 
-function tailscaleIp() {
+function tailscaleSelf() {
   try {
-    return execFileSync('tailscale', ['ip', '-4'], { encoding: 'utf8', timeout: 3000 }).trim().split('\n')[0];
+    const st = JSON.parse(execFileSync('tailscale', ['status', '--json'], { encoding: 'utf8', timeout: 5000 }));
+    const ips = st.Self?.TailscaleIPs || [];
+    return {
+      ipv4: ips.find((ip) => !ip.includes(':')) || null,
+      names: [...ips, String(st.Self?.DNSName || '').replace(/\.$/, '')].filter(Boolean),
+    };
   } catch {
-    return null;
+    return { ipv4: null, names: [] };
   }
+}
+
+function isLoopback(host) {
+  return host === 'localhost' || host === '::1' || /^127\./.test(host);
+}
+
+// Host names the browser may use to reach us. Anything else is refused, which
+// stops DNS-rebinding pages from talking to the server under their own name.
+const ALLOWED_HOSTS = new Set([
+  'localhost', '127.0.0.1', '::1', HOST, os.hostname(), ...TAILSCALE.names,
+  ...String(process.env.ALLOWED_HOSTS || '').split(','),
+].map((h) => h.trim().toLowerCase()).filter(Boolean));
+
+if (!process.env.HOST && !TRUST_PROXY && !TAILSCALE.ipv4) {
+  // Exiting (rather than quietly binding to localhost) lets systemd retry until Tailscale is up.
+  console.error('Tailscale IP not found (is tailscaled up?). Set HOST to bind elsewhere.');
+  process.exit(1);
+}
+if (TRUST_PROXY && !isLoopback(HOST)) {
+  console.error('TRUST_PROXY=1 requires HOST to be a loopback address, or anyone could forge X-Forwarded-* headers.');
+  process.exit(1);
 }
 
 if (Object.keys(loadUsers()).length === 0) {
@@ -42,9 +70,19 @@ function parseCookies(header) {
   const out = {};
   for (const part of String(header || '').split(';')) {
     const i = part.indexOf('=');
-    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    if (i <= 0) continue;
+    const value = part.slice(i + 1).trim();
+    try { out[part.slice(0, i).trim()] = decodeURIComponent(value); } catch { out[part.slice(0, i).trim()] = value; }
   }
   return out;
+}
+
+function hostnameOf(hostHeader) {
+  try { return new URL(`http://${hostHeader}`).hostname.replace(/^\[|\]$/g, '').toLowerCase(); } catch { return null; }
+}
+
+function allowedHost(req) {
+  return ALLOWED_HOSTS.has(hostnameOf(req.headers.host));
 }
 
 function sessionFrom(req) {
@@ -64,16 +102,25 @@ function sameOrigin(req) {
   let host;
   try { host = new URL(origin).host; } catch { return false; }
   const allowed = [req.headers.host];
-  if (TRUST_PROXY && req.headers['x-forwarded-host']) allowed.push(req.headers['x-forwarded-host']);
+  if (TRUST_PROXY && req.headers['x-forwarded-host']) {
+    const fwd = String(req.headers['x-forwarded-host']);
+    if (!ALLOWED_HOSTS.has(hostnameOf(fwd))) return false;
+    allowed.push(fwd);
+  }
   return allowed.includes(host);
 }
 
 function clientIp(req) {
   if (TRUST_PROXY) {
-    const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    // The proxy appends the real peer address last; earlier entries are client-supplied.
+    const fwd = String(req.headers['x-forwarded-for'] || '').split(',').pop().trim();
     if (fwd) return fwd;
   }
   return req.socket.remoteAddress;
+}
+
+function forLog(s) {
+  return String(s).replace(/[\x00-\x1f\x7f]/g, '?').slice(0, 100);
 }
 
 function setSessionCookie(req, res, token, maxAgeSec) {
@@ -86,6 +133,13 @@ function setSessionCookie(req, res, token, maxAgeSec) {
 
 const app = express();
 app.disable('x-powered-by');
+
+app.use((req, res, next) => {
+  if (!allowedHost(req)) {
+    return res.status(421).type('text').send(`Unknown host. Add it to ALLOWED_HOSTS if this is intended.`);
+  }
+  next();
+});
 
 app.use((req, res, next) => {
   res.setHeader('Content-Security-Policy',
@@ -109,9 +163,8 @@ const vendor = {
   'addon-unicode11.js': '@xterm/addon-unicode11/lib/addon-unicode11.js',
 };
 app.get('/vendor/:file', (req, res) => {
-  const rel = vendor[req.params.file];
-  if (!rel) return res.sendStatus(404);
-  res.sendFile(path.join(nm, rel));
+  if (!Object.hasOwn(vendor, req.params.file)) return res.sendStatus(404);
+  res.sendFile(path.join(nm, vendor[req.params.file]));
 });
 app.use('/static', express.static(path.join(pub, 'static'), { index: false }));
 
@@ -123,18 +176,29 @@ app.get('/login', (req, res) => {
 app.post('/api/login', express.json({ limit: '4kb' }), async (req, res) => {
   if (!sameOrigin(req)) return res.status(403).json({ error: 'Bad origin' });
   const ip = clientIp(req);
-  const wait = limiter.blockedFor(ip);
-  if (wait) return res.status(429).json({ error: `Too many attempts. Try again in ${Math.ceil(wait / 60)} min.` });
+  const slot = limiter.begin(ip);
+  if (!slot.ok) {
+    const wait = slot.retryAfter > 60 ? `${Math.ceil(slot.retryAfter / 60)} min` : `${slot.retryAfter} s`;
+    res.setHeader('Retry-After', String(slot.retryAfter));
+    return res.status(429).json({ error: `Too many attempts. Try again in ${wait}.` });
+  }
 
   const { email, password } = req.body || {};
-  const user = await checkCredentials(email, password);
+  if (typeof email !== 'string' || typeof password !== 'string') {
+    limiter.end(ip, false);
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+  let user = null;
+  try {
+    user = await checkCredentials(email, password);
+  } finally {
+    limiter.end(ip, Boolean(user));
+  }
   if (!user) {
-    limiter.fail(ip);
-    console.warn(`[auth] failed login for "${String(email).slice(0, 100)}" from ${ip}`);
+    console.warn(`[auth] failed login for "${forLog(email)}" from ${ip}`);
     return res.status(401).json({ error: 'Invalid email or password' });
   }
-  limiter.succeed(ip);
-  console.log(`[auth] ${user} logged in from ${ip}`);
+  console.log(`[auth] ${user.email} logged in from ${ip}`);
   setSessionCookie(req, res, sessions.create(user), Math.floor(sessions.ttlMs / 1000));
   res.json({ ok: true });
 });
@@ -156,14 +220,29 @@ app.get('/', (req, res) => {
 
 app.use((req, res) => res.sendStatus(404));
 
+// No stack traces to the client (Express shows them unless NODE_ENV=production).
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  const status = err.status >= 400 && err.status < 500 ? err.status : 500;
+  if (status === 500) console.error('request error:', err);
+  res.status(status).json({ error: status === 500 ? 'Server error' : 'Bad request' });
+});
+
 // ---------------------------------------------------------------- websocket
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 });
 const clients = new Set();
 
 server.on('upgrade', (req, socket, head) => {
-  const session = new URL(req.url, 'http://x').pathname === '/ws' && sameOrigin(req) ? sessionFrom(req) : null;
+  socket.on('error', () => {});
+  let session = null;
+  try {
+    const ok = allowedHost(req) && sameOrigin(req) && new URL(req.url, 'http://x').pathname === '/ws';
+    session = ok ? sessionFrom(req) : null;
+  } catch (err) {
+    console.error('upgrade error:', err.message);
+  }
   if (!session) {
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
     return socket.destroy();
@@ -186,85 +265,175 @@ function send(client, msg) {
   ws.send(JSON.stringify(msg));
 }
 
+// Output is buffered per tab and sent once per event-loop turn: a pty hands
+// over 20-50 byte reads, and one WebSocket message each is a lot of overhead.
+function queueOutput(client, id, data) {
+  client.out.set(id, (client.out.get(id) || '') + data);
+  if (!client.flushScheduled) {
+    client.flushScheduled = true;
+    setImmediate(() => flushOutput(client));
+  }
+}
+
+function flushOutput(client, onlyId) {
+  if (!onlyId) client.flushScheduled = false;
+  for (const [id, d] of client.out) {
+    if (onlyId && id !== onlyId) continue;
+    client.out.delete(id);
+    send(client, { t: 'out', id, d });
+  }
+}
+
+// Browsers attach to a tab when they first show it; until then they only get
+// activity notices for it. That keeps reconnects cheap with many tabs.
 function attach(client, tab) {
   if (client.subs.has(tab.id)) return;
-  const unsub = tab.subscribe(
-    (data, size) => send(client, { t: 'snap', id: tab.id, d: data, cols: size.cols, rows: size.rows }),
-    (data) => send(client, { t: 'out', id: tab.id, d: data }),
-  );
-  client.subs.set(tab.id, unsub);
+  const id = tab.id;
+  const handle = tab.subscribe({
+    onSnapshot: (d, size, seq) => {
+      flushOutput(client, id);
+      send(client, { t: 'snap', id, d, seq, cols: size.cols, rows: size.rows });
+    },
+    onData: (d) => queueOutput(client, id, d),
+    onSize: (size) => {
+      flushOutput(client, id);
+      send(client, { t: 'size', id, cols: size.cols, rows: size.rows });
+    },
+    onResync: () => {
+      client.subs.delete(id);
+      // Back off when a client keeps falling behind (slow link during a flood):
+      // each resync costs a snapshot. Streak resets after a minute without one.
+      const now = Date.now();
+      const r = client.resyncs.get(id) || { n: 0, last: 0 };
+      r.n = now - r.last > 60_000 ? 0 : r.n + 1;
+      r.last = now;
+      client.resyncs.set(id, r);
+      const delay = r.n === 0 ? 0 : Math.min(30_000, 1000 * 2 ** (r.n - 1));
+      setTimeout(() => {
+        if (clients.has(client) && !client.subs.has(id) && terminals.get(id)) attach(client, terminals.get(id));
+      }, delay);
+    },
+  });
+  client.subs.set(id, handle);
 }
 
 function syncClient(client) {
   send(client, { t: 'list', tabs: terminals.list() });
-  for (const info of terminals.list()) attach(client, terminals.get(info.id));
-  for (const [id, unsub] of client.subs) {
-    if (!terminals.get(id)) { unsub(); client.subs.delete(id); }
+  for (const [id, handle] of client.subs) {
+    if (!terminals.get(id)) {
+      handle.close();
+      client.subs.delete(id);
+      client.out.delete(id);
+    }
   }
 }
 
 terminals.on('changed', () => { for (const c of clients) syncClient(c); });
+terminals.on('activity', (id) => {
+  for (const c of clients) if (!c.subs.has(id)) send(c, { t: 'act', id });
+});
 
 function onConnection(ws, session) {
-  const client = { ws, sessionId: session.id, email: session.email, subs: new Map() };
+  const client = {
+    ws, sessionId: session.id, email: session.email, subs: new Map(), out: new Map(), flushScheduled: false, resyncs: new Map(),
+  };
   clients.add(client);
   send(client, { t: 'hello', email: session.email });
   syncClient(client);
 
   ws.on('message', (raw) => {
-    if (!sessions.isValid(client.sessionId)) return ws.close(4001, 'session expired');
-    let msg;
-    try { msg = JSON.parse(raw); } catch { return; }
-    if (!msg || typeof msg !== 'object') return;
-    const tab = typeof msg.id === 'string' ? terminals.get(msg.id) : null;
-
-    switch (msg.t) {
-      case 'in':
-        if (tab && typeof msg.d === 'string') {
-          sessions.touch(client.sessionId);
-          tab.input(msg.d);
-        }
-        break;
-      case 'resize':
-        if (tab) tab.resize(Number(msg.cols), Number(msg.rows));
-        break;
-      case 'create': {
-        const from = typeof msg.from === 'string' ? terminals.get(msg.from) : null;
-        const created = terminals.create(msg.name, from ? from.currentCwd() : undefined);
-        if (created) send(client, { t: 'created', id: created.id });
-        break;
-      }
-      case 'rename':
-        if (tab) terminals.rename(tab.id, msg.name);
-        break;
-      case 'close':
-        if (tab) terminals.close(tab.id);
-        break;
-      case 'reorder':
-        terminals.reorder(msg.ids);
-        break;
-      case 'ping':
-        send(client, { t: 'pong' });
-        break;
+    try {
+      handleMessage(client, raw);
+    } catch (err) {
+      console.error('message handler error:', err);
     }
   });
 
+  // Oversized frames and protocol errors land here; without a handler they crash the process.
+  ws.on('error', () => ws.terminate());
+
   ws.on('close', () => {
-    for (const unsub of client.subs.values()) unsub();
+    for (const handle of client.subs.values()) handle.close();
+    client.subs.clear();
+    client.out.clear();
     clients.delete(client);
   });
 }
 
-// Drop sockets whose session expired while they sat idle.
+const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : NaN);
+const str = (v) => (typeof v === 'string' ? v : undefined);
+
+function handleMessage(client, raw) {
+  const ws = client.ws;
+  if (!sessions.isValid(client.sessionId)) return ws.close(4001, 'session expired');
+  let msg;
+  try { msg = JSON.parse(raw); } catch { return; }
+  if (!msg || typeof msg !== 'object') return;
+  const tab = typeof msg.id === 'string' ? terminals.get(msg.id) : null;
+
+  switch (msg.t) {
+    case 'in':
+    case 'bin':
+      if (tab && typeof msg.d === 'string') {
+        sessions.touch(client.sessionId);
+        tab.input(msg.d, msg.t === 'bin');
+      }
+      break;
+    case 'attach':
+      if (tab) attach(client, tab);
+      break;
+    case 'ack': {
+      const handle = tab && client.subs.get(tab.id);
+      if (handle) handle.ack(num(msg.seq), num(msg.n));
+      break;
+    }
+    case 'resize':
+      if (tab && num(msg.cols) > 0 && num(msg.rows) > 0) tab.resize(msg.cols, msg.rows);
+      break;
+    case 'create': {
+      const from = typeof msg.from === 'string' ? terminals.get(msg.from) : null;
+      const created = terminals.create(str(msg.name), from ? from.currentCwd() : undefined);
+      if (created) send(client, { t: 'created', id: created.id });
+      else send(client, { t: 'error', msg: 'Limit of 50 terminals reached. Close one first.' });
+      break;
+    }
+    case 'rename':
+      if (tab && str(msg.name)) terminals.rename(tab.id, msg.name);
+      break;
+    case 'close':
+      if (tab) terminals.close(tab.id);
+      break;
+    case 'reorder':
+      if (Array.isArray(msg.ids)) terminals.reorder(msg.ids.filter((x) => typeof x === 'string'));
+      break;
+    case 'ping':
+      send(client, { t: 'pong' });
+      break;
+  }
+}
+
+// Drop sockets whose session expired, or whose user was removed or changed password.
 setInterval(() => {
-  for (const c of clients) if (!sessions.isValid(c.sessionId)) c.ws.close(4001, 'session expired');
-}, 60_000).unref();
+  try {
+    for (const c of clients) {
+      if (!sessions.isValid(c.sessionId, { checkUser: true })) c.ws.close(4001, 'session expired');
+    }
+  } catch (err) {
+    console.error('session check failed:', err);
+  }
+}, 10_000).unref();
 
 // ---------------------------------------------------------------- lifecycle
 
 server.listen(PORT, HOST, () => {
   console.log(`Web terminal listening on http://${HOST.includes(':') ? `[${HOST}]` : HOST}:${PORT}`);
+  console.log(`Accepted host names: ${[...ALLOWED_HOSTS].join(', ')}`);
 });
+
+// Last line of defence: an unexpected exception must not take every shell down
+// with the process. Log it and keep serving.
+process.on('uncaughtException', (err) => console.error('uncaught exception:', err));
+process.on('unhandledRejection', (err) => console.error('unhandled rejection:', err));
 
 function shutdown() {
   terminals.shutdown();

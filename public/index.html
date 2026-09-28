@@ -9,22 +9,42 @@
 </head>
 <body>
   <div id="app">
-    <aside id="sidebar">
+    <nav id="rail" aria-label="Collapsed sidebar">
+      <button id="expand" class="icon-btn" title="Show terminals" aria-label="Show terminals">☰</button>
+      <button class="icon-btn new-tab" title="New terminal" aria-label="New terminal">+</button>
+      <span class="conn" role="status" aria-label="Disconnected" title="Disconnected"></span>
+    </nav>
+    <aside id="sidebar" aria-label="Terminals">
       <div class="sidebar-head">
-        <div class="brand"><span class="brand-mark">&gt;_</span> Terminals</div>
-        <button id="new-tab" class="icon-btn" title="New terminal (in the current tab's folder)" aria-label="New terminal">+</button>
+        <div class="brand"><span class="brand-mark" aria-hidden="true">&gt;_</span> Terminals</div>
+        <div class="head-actions">
+          <button class="icon-btn new-tab" title="New terminal (opens in the current tab's folder)" aria-label="New terminal">+</button>
+          <button id="collapse" class="icon-btn" title="Hide sidebar" aria-label="Hide sidebar">«</button>
+        </div>
       </div>
-      <ul id="tabs" role="tablist"></ul>
+      <ul id="tabs" role="tablist" aria-orientation="vertical"
+          title="Ctrl+Shift+E to get here. Arrow keys to move, F2 to rename, Delete to close, Esc back to the terminal"></ul>
       <div class="sidebar-foot">
-        <span id="conn" class="conn" title="Connection"></span>
+        <span class="conn" role="status" aria-label="Disconnected" title="Disconnected"></span>
         <span id="who" class="who"></span>
+        <span class="font-size" role="group" aria-label="Font size">
+          <button id="font-down" class="link-btn" title="Smaller text (Ctrl+Shift+−)" aria-label="Smaller text">A−</button>
+          <button id="font-up" class="link-btn" title="Larger text (Ctrl+Shift++)" aria-label="Larger text">A+</button>
+        </span>
         <button id="logout" class="link-btn">Sign out</button>
       </div>
     </aside>
+    <div id="backdrop" hidden></div>
     <main id="main">
-      <button id="toggle-sidebar" class="icon-btn toggle" title="Show/hide sidebar" aria-label="Toggle sidebar">☰</button>
       <div id="terms"></div>
-      <div id="empty" class="empty" hidden><span>No terminals. Press <b>+</b> to open one.</span></div>
+      <div id="empty" class="empty" hidden>
+        <div>
+          <p>No terminals open.</p>
+          <button class="primary new-tab">New terminal</button>
+        </div>
+      </div>
+      <div id="banner" class="banner" role="alert" hidden>Connection lost. Reconnecting… Typing is disabled until then.</div>
+      <div id="toast" class="banner toast" role="status" hidden></div>
     </main>
   </div>
   <script src="/vendor/xterm.js"></script>

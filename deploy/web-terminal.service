@@ -5,13 +5,15 @@
 #   loginctl enable-linger $USER   # keep it running after you log out
 [Unit]
 Description=Web Terminal
-After=network-online.target tailscaled.service
+# The user manager can't see tailscaled.service; wait for its network device instead.
+Wants=sys-subsystem-net-devices-tailscale0.device
+After=sys-subsystem-net-devices-tailscale0.device
 
 [Service]
 WorkingDirectory=/mnt/dados1/claude-manager
 ExecStart=/usr/bin/node --env-file-if-exists=.env server.js
 Restart=on-failure
-RestartSec=3
+RestartSec=5
 KillMode=control-group
 
 [Install]
