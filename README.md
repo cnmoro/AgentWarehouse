@@ -75,7 +75,14 @@ The terminal itself keeps the last 10,000 lines (`SCROLLBACK`). Everything older
 
 History is stored in `data/history/<tab>/` (readable only by you). Each tab keeps at most `HISTORY_LINES` lines (default 200,000) and `HISTORY_MB` megabytes (default 64); the oldest lines are dropped beyond either limit. Plain text needs about 10–20 MB for 200,000 lines; heavily coloured output reaches the megabyte limit sooner. Set `HISTORY_LINES=0` to turn history off. If the disk fills up, history stops for that tab and the terminal carries on. Archiving costs some throughput during extreme output floods (about 25% at a full-speed `cat` of a log), none at normal use.
 
-Tab names and working folders are saved to `data/tabs.json`. After a server restart the tabs come back with fresh shells. Running programs do not survive a restart.
+### After a server restart
+
+The tabs come back with the same names, in the same folders. Programs that were running do not survive a restart, but:
+
+- If a command was running in a tab (say `claude`), the tab shows a short note and the command is typed at the prompt, exactly as you entered it. Press Enter to start it again, or Ctrl+U to clear it. Nothing runs by itself.
+- Each tab keeps its own bash command history, saved after every command, so ↑ recalls what you ran in that tab. A new tab starts with a copy of your normal `~/.bash_history`. Commands typed in the web terminal are not added to `~/.bash_history`.
+
+The state is saved every 10 seconds and on shutdown, in `data/tabs.json` and `data/shells/`. When the server stops, it hangs up every program in every tab, waits up to 2 seconds, then kills whatever is left, so nothing keeps running in the background and a restart takes a few seconds.
 
 ## Limits
 

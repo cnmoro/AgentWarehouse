@@ -17,6 +17,8 @@ RestartSec=5
 # 78 = configuration error (e.g. no users yet); restarting would just loop.
 RestartPreventExitStatus=78
 KillMode=control-group
+# The server stops its terminals itself within a few seconds; don't wait 90 s for stragglers.
+TimeoutStopSec=20
 
 [Install]
 WantedBy=default.target

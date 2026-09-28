@@ -497,8 +497,19 @@ server.listen(PORT, HOST, () => {
 process.on('uncaughtException', (err) => console.error('uncaught exception:', err));
 process.on('unhandledRejection', (err) => console.error('unhandled rejection:', err));
 
-function shutdown() {
-  terminals.shutdown();
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  // Whatever happens below, don't linger (systemd would wait, then SIGKILL).
+  setTimeout(() => process.exit(0), 8000).unref();
+  try {
+    server.close();
+    for (const c of clients) c.ws.terminate();
+    await terminals.shutdown();
+  } catch (err) {
+    console.error('shutdown error:', err);
+  }
   process.exit(0);
 }
 process.on('SIGINT', shutdown);
