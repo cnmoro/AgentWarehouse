@@ -36,6 +36,52 @@
     term.parser.registerOscHandler(8, () => true);
   }
 
-  if (typeof module === 'object' && module.exports) module.exports = { clampRepeatCounts, dropHyperlinks };
-  else Object.assign(root, { clampRepeatCounts, dropHyperlinks });
+  // An exception inside xterm's parser leaves its write queue stuck for good:
+  // nothing is parsed again, the tab freezes and (on the server) the shell
+  // blocks once flow control pauses it. Two layers of protection:
+  //  - xterm 6.0.0 throws on ED/DECSED 1 ("erase to cursor") with the cursor in
+  //    the bottom-right cell; that erases the whole screen, so do exactly that.
+  //  - any other exception is contained: the rest of that chunk is dropped and
+  //    the parser reset, instead of the terminal dying.
+  function guardParser(term) {
+    const ih = term._core && term._core._inputHandler;
+    if (!ih || typeof ih.parse !== 'function') return;
+    for (const prefix of ['', '?']) {
+      term.parser.registerCsiHandler(prefix ? { prefix, final: 'J' } : { final: 'J' }, (params) => {
+        const b = term._core.buffer;
+        if (params[0] !== 1 || b.x + 1 < term.cols || b.y !== term.rows - 1) return false;
+        return ih.eraseInDisplay({ params: [2], length: 1 }, prefix === '?');
+      });
+    }
+    const parse = ih.parse; // the write queue looks this up on every call
+    ih.parse = function (data, promiseResult) {
+      try {
+        return parse.call(this, data, promiseResult);
+      } catch (err) {
+        try { this._parser.reset(); } catch { /* nothing more to do */ }
+        if (typeof console !== 'undefined') console.error('terminal parser error (chunk dropped):', err && err.message);
+        return undefined;
+      }
+    };
+  }
+
+  // xterm's own OSC 4 (palette) handler is quadratic in the payload length:
+  // 400 KB takes 12 s. Real palette sequences are far below 4 KB; ignore
+  // anything bigger. (Handlers registered later run first, so the server's and
+  // browser's own OSC 4 handlers still see normal-sized sequences.)
+  function limitPaletteSequences(term) {
+    term.parser.registerOscHandler(4, (data) => data.length > 4096);
+  }
+
+  // Everything both sides apply to every terminal.
+  function hardenTerminal(term) {
+    clampRepeatCounts(term);
+    dropHyperlinks(term);
+    limitPaletteSequences(term);
+    guardParser(term);
+  }
+
+  const api = { clampRepeatCounts, dropHyperlinks, limitPaletteSequences, guardParser, hardenTerminal };
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  else Object.assign(root, api);
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -1,5 +1,5 @@
 'use strict';
-/* global Terminal, FitAddon, WebLinksAddon, WebglAddon, Unicode11Addon, clampRepeatCounts, dropHyperlinks */
+/* global Terminal, FitAddon, WebLinksAddon, WebglAddon, Unicode11Addon, hardenTerminal */
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -186,7 +186,7 @@ function silenceQueries(term) {
   p.registerCsiHandler({ prefix: '>', final: 'q' }, swallow);           // XTVERSION
   p.registerDcsHandler({ intermediates: '$', final: 'q' }, swallow);    // DECRQSS
   for (const osc of [4, 10, 11, 12]) {                                   // color queries
-    p.registerOscHandler(osc, (data) => data.split(';').includes('?'));
+    p.registerOscHandler(osc, (data) => data.length <= 4096 && data.split(';').includes('?'));
   }
 }
 
@@ -215,8 +215,7 @@ function createView(id) {
   term.loadAddon(new Unicode11Addon.Unicode11Addon());
   term.unicode.activeVersion = '11';
   silenceQueries(term);
-  clampRepeatCounts(term);
-  dropHyperlinks(term);
+  hardenTerminal(term);
   term.open(el);
 
   term.attachCustomKeyEventHandler((e) => handleKey(term, e));
