@@ -79,10 +79,12 @@ History is stored in `data/history/<tab>/` (readable only by you). Each tab keep
 
 The tabs come back with the same names, in the same folders. Programs that were running do not survive a restart, but:
 
-- If a command was running in a tab (say `claude`), the tab shows a short note and the command is typed at the prompt, exactly as you entered it. Press Enter to start it again, or Ctrl+U to clear it. Nothing runs by itself.
+- If a command was running in a tab (say `claude`), the tab shows a short note, and once the shell shows its prompt the command is typed there, exactly as you entered it. Press Enter to start it again, or Ctrl+U to clear it. Nothing runs by itself, and nothing is typed while your startup files are still running or asking questions. The command is also the newest history entry, so ↑ brings it back if you cleared it. A command you hid from history with a leading space is not offered.
 - Each tab keeps its own bash command history, saved after every command, so ↑ recalls what you ran in that tab. A new tab starts with a copy of your normal `~/.bash_history`. Commands typed in the web terminal are not added to `~/.bash_history`.
 
-The state is saved every 10 seconds and on shutdown, in `data/tabs.json` and `data/shells/`. When the server stops, it hangs up every program in every tab, waits up to 2 seconds, then kills whatever is left, so nothing keeps running in the background and a restart takes a few seconds.
+The state is saved every 10 seconds and on shutdown, in `data/tabs.json` and `data/shells/`.
+
+When the server stops, it hangs up every program started in any tab (including jobs left behind by shells that have exited), waits up to 2 seconds, then kills whatever is left. Run as the systemd service, it also stops programs that detached into their own session (`setsid`, daemons, tmux servers), so a stop or restart takes about 2 seconds and nothing keeps running. Started by hand (`npm start`), such detached programs are left alone, as they would be when closing any terminal.
 
 ## Limits
 

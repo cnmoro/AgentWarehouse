@@ -236,19 +236,23 @@
   // reflow room for every line it may create avoids it; the scrollback limit
   // is restored right after, which trims only the oldest lines. Widening
   // creates no lines and needs nothing.
-  function safeResize(term, cols, rows) {
+  // `afterReflow` (optional) runs after the reflow but before the limit is
+  // restored, while every line is still there.
+  function safeResize(term, cols, rows, afterReflow) {
     if (cols === term.cols && rows === term.rows) return;
     const buffers = term._core && term._core.buffers;
     const lines = buffers && buffers.normal && buffers.normal.lines;
     const limit = term.options.scrollback;
     const need = lines && cols < term.cols ? lines.length * Math.ceil(term.cols / cols) + rows : 0;
-    if (!(need > lines.maxLength)) {
+    if (!lines || !(need > lines.maxLength)) {
       term.resize(cols, rows);
+      if (afterReflow) afterReflow();
       return;
     }
     try {
       term.options.scrollback = need;
       term.resize(cols, rows);
+      if (afterReflow) afterReflow();
     } finally {
       term.options.scrollback = limit;
     }
@@ -266,6 +270,10 @@
     if (!ih || !raw || !('scrollOnEraseInDisplay' in raw) || typeof ih.eraseInDisplay !== 'function') return;
     term.parser.registerCsiHandler({ final: 'J' }, (params) => {
       if (params[0] !== 2 || term.buffer.active.type !== 'normal') return false;
+      // Inside a scroll region the plain erase applies (scrolling would only
+      // push blank lines into the scrollback).
+      const b = term._core.buffer;
+      if (b.scrollTop !== 0 || b.scrollBottom !== term.rows - 1) return false;
       const before = raw.scrollOnEraseInDisplay;
       try {
         raw.scrollOnEraseInDisplay = true;
@@ -286,6 +294,8 @@
     capStringPayloads(term);
     capCombiningMarks(term);
     eraseKeepsScrollback(term);
+    // The server's private prompt marker (OSC 6973, sent by PROMPT_COMMAND).
+    term.parser.registerOscHandler(6973, () => true);
     guardParser(term);
   }
 

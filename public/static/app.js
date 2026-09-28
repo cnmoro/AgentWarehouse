@@ -951,6 +951,15 @@ function histPump() {
 }
 
 function histSetInfo(info) {
+  // Old lines were dropped (history at its limit): keep the reader on the
+  // same line rather than letting the view slide forward.
+  const keepLine = hist.info && info.epoch === hist.info.epoch && info.start !== hist.info.start && !hist.stick
+    ? histFirstLine(histGeometry()).line : null;
+  histApplyInfo(info);
+  if (keepLine !== null) histScrollToLine(Math.max(info.start, keepLine), 'top');
+}
+
+function histApplyInfo(info) {
   if (!hist.info || info.epoch !== hist.info.epoch) {
     // Line numbers moved (clear, resize): everything cached is stale.
     hist.pages.clear();
