@@ -185,16 +185,16 @@
   // Combining marks (U+0301...) pile up in one cell without limit, and REP
   // repeats the whole cluster: an 80 KB file ran the server out of memory.
   // Tall stacks of marks are also slow for the browser to draw. Limits, in
-  // UTF-16 units including the base character: 16 for emoji sequences (family
-  // emoji and tag flags need 11-14), 6 for anything else (a letter with up to
-  // five accents). Later marks are dropped, but a width change they carry
+  // UTF-16 units including the base character: 16 when the cluster starts with
+  // an emoji (family emoji and tag flags need 11-14), 6 for anything else (a
+  // letter with up to five accents; keycaps like #️⃣ are 3). Later marks are dropped, but a width change they carry
   // (e.g. emoji presentation) still applies.
   const MAX_CLUSTER = 16;
   const MAX_TEXT_CLUSTER = 6;
-  const EMOJI_PARTS = /[\u200d\ufe0f\u20e3]|[\ud83c-\ud83e\udb40]/;
-  const clusterLimit = (cluster, codePoint) =>
-    (EMOJI_PARTS.test(cluster) || codePoint === 0x200d || codePoint === 0xfe0f || codePoint >= 0x1f000
-      ? MAX_CLUSTER : MAX_TEXT_CLUSTER);
+  // Decided by the cluster's first character only: a ZWJ or VS16 further in
+  // must not unlock the larger limit for a stack of accents.
+  const EMOJI_BASE = /^(?:\p{Extended_Pictographic}|[\u{1F1E6}-\u{1F1FF}])/u;
+  const clusterLimit = (cluster) => (EMOJI_BASE.test(cluster) ? MAX_CLUSTER : MAX_TEXT_CLUSTER);
   const IS_COMBINED = 0x200000;
   const WIDTH_BITS = 0xC00000;
   const interned = new Map();
@@ -206,7 +206,7 @@
     proto.addCodepointToCell = function (index, codePoint, width) {
       const content = this._data[index * 3];
       const cluster = (content & IS_COMBINED) && this._combined[index];
-      if (cluster && cluster.length >= clusterLimit(cluster, codePoint)) {
+      if (cluster && cluster.length >= clusterLimit(cluster)) {
         if (width) this._data[index * 3] = (content & ~WIDTH_BITS) | (width << 22);
         return;
       }
