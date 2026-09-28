@@ -66,11 +66,12 @@
   }
 
   // xterm's own OSC 4 (palette) handler is quadratic in the payload length:
-  // 400 KB takes 12 s. Real palette sequences are far below 4 KB; ignore
-  // anything bigger. (Handlers registered later run first, so the server's and
+  // 400 KB takes 12 s, 16 KB about 10 ms. A full 256-colour palette is ~5 KB;
+  // ignore anything over 16 KB. (Handlers registered later run first, so the server's and
   // browser's own OSC 4 handlers still see normal-sized sequences.)
+  const MAX_PALETTE = 16 * 1024;
   function limitPaletteSequences(term) {
-    term.parser.registerOscHandler(4, (data) => data.length > 4096);
+    term.parser.registerOscHandler(4, (data) => data.length > MAX_PALETTE);
   }
 
   // xterm's string handlers build OSC/DCS payloads one character at a time
@@ -111,8 +112,10 @@
       const now = Date.now();
       tokens = Math.min(perSecond, tokens + (now - last) * perSecond / 1000);
       last = now;
-      if (tokens < n) return false;
-      tokens -= n;
+      // A single sequence bigger than the whole bucket (a full 256-colour
+      // palette) still passes when the bucket is full.
+      if (tokens < Math.min(n, perSecond)) return false;
+      tokens = Math.max(0, tokens - n);
       return true;
     };
     const colorCount = {
@@ -121,13 +124,29 @@
     };
     for (const code of [4, 10, 11, 12, 104, 110, 111, 112]) {
       term.parser.registerOscHandler(code, (d) => {
-        if (d.length > 4096) return true;
+        if (d.length > MAX_PALETTE) return true;
         const n = colorCount[code] ? colorCount[code](d) : (d.split(';').filter((x) => x !== '?').length || 1);
         return n > 0 && !take(n);
       });
     }
     if (!ih) return;
-    for (const [prefix, mode, set, reset] of [['', 20, 'setMode', 'resetMode'], ['?', 12, 'setModePrivate', 'resetModePrivate']]) {
+    // LNM (CSI 20 h/l) changes how line feeds work, so it must never be
+    // dropped. Setting the raw option directly gives the same behaviour without
+    // the option-change event that makes the renderer restyle.
+    const raw = term._core.optionsService && term._core.optionsService.rawOptions;
+    if (raw && 'convertEol' in raw) {
+      for (const [final, method, value] of [['h', 'setMode', true], ['l', 'resetMode', false]]) {
+        term.parser.registerCsiHandler({ final }, (params) => {
+          if (!params.includes(20)) return false;
+          raw.convertEol = value;
+          const rest = params.filter((v) => v !== 20);
+          if (rest.length) ih[method]({ params: rest, length: rest.length });
+          return true;
+        });
+      }
+    }
+    // Cursor blink (CSI ?12 h/l) is cosmetic: throttle it.
+    for (const [prefix, mode, set, reset] of [['?', 12, 'setModePrivate', 'resetModePrivate']]) {
       for (const [final, method] of [['h', set], ['l', reset]]) {
         if (typeof ih[method] !== 'function') continue;
         term.parser.registerCsiHandler(prefix ? { prefix, final } : { final }, (params) => {
@@ -140,17 +159,42 @@
     }
   }
 
+  // Combining marks (U+0301...) pile up in one cell without limit, and REP
+  // repeats the whole cluster: an 80 KB file ran the server out of memory.
+  // Keep at most 32 UTF-16 units per cell; later marks are dropped, but a
+  // width change they carry (e.g. emoji presentation) still applies.
+  const MAX_CLUSTER = 32;
+  const IS_COMBINED = 0x200000;
+  const WIDTH_BITS = 0xC00000;
+  function capCombiningMarks(term) {
+    const line = term._core && term._core.buffer && term._core.buffer.lines.get(0);
+    const proto = line && Object.getPrototypeOf(line);
+    if (!proto || proto.__clusterCapped || typeof proto.addCodepointToCell !== 'function') return;
+    const add = proto.addCodepointToCell;
+    proto.addCodepointToCell = function (index, codePoint, width) {
+      const content = this._data[index * 3];
+      if ((content & IS_COMBINED) && this._combined[index] && this._combined[index].length >= MAX_CLUSTER) {
+        if (width) this._data[index * 3] = (content & ~WIDTH_BITS) | (width << 22);
+        return;
+      }
+      add.call(this, index, codePoint, width);
+    };
+    proto.__clusterCapped = true;
+  }
+
   // Everything both sides apply to every terminal.
   function hardenTerminal(term) {
     clampRepeatCounts(term);
     dropHyperlinks(term);
     limitPaletteSequences(term);
     capStringPayloads(term);
+    capCombiningMarks(term);
     guardParser(term);
   }
 
   const api = {
-    clampRepeatCounts, dropHyperlinks, limitPaletteSequences, capStringPayloads, throttleRestyles, guardParser, hardenTerminal,
+    clampRepeatCounts, dropHyperlinks, limitPaletteSequences, capStringPayloads, capCombiningMarks,
+    throttleRestyles, guardParser, hardenTerminal,
   };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else Object.assign(root, api);

@@ -294,11 +294,22 @@ function setWebgl(view, on) {
   }
 }
 
+// The server keeps terminals between 20x1 and 500x200; fit within the same
+// bounds so both sides always agree on the size (a narrower window clips).
+function fittedSize(v) {
+  let dims;
+  try { dims = v.fit.proposeDimensions(); } catch { return null; }
+  if (!dims || !(dims.cols > 0) || !(dims.rows > 0)) return null;
+  return { cols: Math.max(20, Math.min(500, dims.cols)), rows: Math.max(1, Math.min(200, dims.rows)) };
+}
+
 function fitActive() {
   const v = state.views.get(state.active);
   if (!v || !v.el.classList.contains('visible')) return;
-  try { v.fit.fit(); } catch { return; }
-  send({ t: 'resize', id: state.active, cols: v.term.cols, rows: v.term.rows });
+  const size = fittedSize(v);
+  if (!size) return;
+  if (size.cols !== v.term.cols || size.rows !== v.term.rows) v.term.resize(size.cols, size.rows);
+  send({ t: 'resize', id: state.active, cols: size.cols, rows: size.rows });
 }
 
 function drawerOpen() {
@@ -316,8 +327,8 @@ function focusActive() {
 function reclaimSize(id) {
   if (id !== state.active) return;
   const v = state.views.get(id);
-  const dims = v && v.fit.proposeDimensions();
-  if (dims && (dims.cols !== v.term.cols || dims.rows !== v.term.rows)) fitActive();
+  const size = v && fittedSize(v);
+  if (size && (size.cols !== v.term.cols || size.rows !== v.term.rows)) fitActive();
 }
 
 // Tell the server how much output we have actually processed, so it can hold
