@@ -24,10 +24,25 @@
       if (typeof ih[method] !== 'function') continue;
       term.parser.registerCsiHandler({ final }, (params) => {
         const n = params[0];
-        if (typeof n !== 'number' || n <= limit()) return false;
-        return ih[method]({ params: [limit()], length: 1 });
+        if (typeof n !== 'number') return false;
+        let max = limit();
+        // REP of a combined cluster (e + marks) prints every mark into every
+        // cell: bound the total code units, not just the cell count.
+        if (final === 'b') max = Math.max(1, Math.floor(max / clusterLength(term, ih)));
+        if (n <= max) return false;
+        return ih[method]({ params: [max], length: 1 });
       });
     }
+  }
+  function clusterLength(term, ih) {
+    try {
+      const js = ih._parser.precedingJoinState;
+      if (!js) return 1;
+      const b = term._core.buffer;
+      const x = b.x - ((js >> 1) & 3);
+      const line = b.lines.get(b.ybase + b.y);
+      return Math.max(1, line.getString(x).length);
+    } catch { return 1; }
   }
   // OSC 8 hyperlinks cost xterm a buffer marker each (~3 KB) plus work on every
   // scrollback trim; a stream of unique links runs a process out of memory.
@@ -161,11 +176,13 @@
 
   // Combining marks (U+0301...) pile up in one cell without limit, and REP
   // repeats the whole cluster: an 80 KB file ran the server out of memory.
-  // Keep at most 32 UTF-16 units per cell; later marks are dropped, but a
-  // width change they carry (e.g. emoji presentation) still applies.
-  const MAX_CLUSTER = 32;
+  // Keep at most 16 UTF-16 units per cell (the longest real clusters, family
+  // emoji and tag flags, are 11-14); later marks are dropped, but a width
+  // change they carry (e.g. emoji presentation) still applies.
+  const MAX_CLUSTER = 16;
   const IS_COMBINED = 0x200000;
   const WIDTH_BITS = 0xC00000;
+  const interned = new Map();
   function capCombiningMarks(term) {
     const line = term._core && term._core.buffer && term._core.buffer.lines.get(0);
     const proto = line && Object.getPrototypeOf(line);
@@ -178,6 +195,19 @@
         return;
       }
       add.call(this, index, codePoint, width);
+      // String += builds a rope: a 32-unit cluster costs ~1 KB per cell. Store
+      // one flat, shared copy instead.
+      const s = this._combined[index];
+      if (typeof s === 'string') {
+        let flat = interned.get(s);
+        if (flat === undefined) {
+          if (interned.size >= 4096) interned.clear();
+          flat = (' ' + s).slice(1);
+          flat.charCodeAt(0);
+          interned.set(flat, flat);
+        }
+        this._combined[index] = flat;
+      }
     };
     proto.__clusterCapped = true;
   }

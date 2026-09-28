@@ -64,6 +64,21 @@ When two browsers show the same terminal, the one you used last sets its size, a
 
 Tab names and working folders are saved to `data/tabs.json`. After a server restart the tabs come back with fresh shells. Running programs do not survive a restart.
 
+## Limits
+
+The screen you get back after a reload or on a second device matches the live one cell for cell, with these exceptions:
+
+- Scrollback is shortened when a snapshot would exceed 2 MB (heavily coloured history).
+- Tab stops, underline styles (curly, double, coloured) and national character sets other than DEC line drawing are not restored.
+
+Some terminal features are limited on purpose, because programs (or files you `cat`) could otherwise freeze or crash the server or the browser:
+
+- OSC 8 hyperlinks are ignored. Plain URLs in the output are still clickable.
+- Escape strings (titles, clipboard, sixel, etc.) over 64 KB and colour palette sequences over 16 KB are ignored.
+- A single character cell keeps at most 16 combining characters. Real emoji sequences and accents are shorter than that.
+- Huge repeat counts in scroll, insert/delete-line, tab and repeat-character sequences are cut to the screen size.
+- In the browser, colour changes and cursor-blink changes are rate-limited during floods.
+
 ## Security
 
 This page gives full shell access as the user running the server. The defences:
