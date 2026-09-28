@@ -105,8 +105,10 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 #main { flex: 1; min-width: 0; position: relative; background: var(--bg); }
 #terms { position: absolute; inset: 0; overflow: clip; }
-.term { position: absolute; inset: 8px 4px 4px 10px; visibility: hidden; }
-.term.visible { visibility: visible; }
+/* display:none (not visibility) so xterm pauses rendering of hidden tabs: a
+   flood in a background tab then costs parsing only. */
+.term { position: absolute; inset: 8px 4px 4px 10px; display: none; }
+.term.visible { display: block; }
 .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); text-align: center; }
 .empty[hidden] { display: none; }
 .primary {

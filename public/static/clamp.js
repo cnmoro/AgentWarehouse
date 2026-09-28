@@ -28,7 +28,15 @@
         let max = limit();
         // REP of a combined cluster (e + marks) prints every mark into every
         // cell: bound the total code units, not just the cell count.
-        if (final === 'b') max = Math.max(1, Math.floor(max / clusterLength(term, ih)));
+        if (final === 'b') {
+          max = Math.max(1, Math.floor(max / clusterLength(term, ih)));
+          // In insert mode every printed cell shifts the rest of the line, so
+          // each repeat costs a full line: more than one line's worth changes
+          // nothing visible anyway.
+          try {
+            if (term._core.coreService.modes.insertMode) max = Math.min(max, term.cols);
+          } catch { /* internals changed; keep the area limit */ }
+        }
         if (n <= max) return false;
         return ih[method]({ params: [max], length: 1 });
       });
@@ -176,10 +184,17 @@
 
   // Combining marks (U+0301...) pile up in one cell without limit, and REP
   // repeats the whole cluster: an 80 KB file ran the server out of memory.
-  // Keep at most 16 UTF-16 units per cell (the longest real clusters, family
-  // emoji and tag flags, are 11-14); later marks are dropped, but a width
-  // change they carry (e.g. emoji presentation) still applies.
+  // Tall stacks of marks are also slow for the browser to draw. Limits, in
+  // UTF-16 units including the base character: 16 for emoji sequences (family
+  // emoji and tag flags need 11-14), 6 for anything else (a letter with up to
+  // five accents). Later marks are dropped, but a width change they carry
+  // (e.g. emoji presentation) still applies.
   const MAX_CLUSTER = 16;
+  const MAX_TEXT_CLUSTER = 6;
+  const EMOJI_PARTS = /[\u200d\ufe0f\u20e3]|[\ud83c-\ud83e\udb40]/;
+  const clusterLimit = (cluster, codePoint) =>
+    (EMOJI_PARTS.test(cluster) || codePoint === 0x200d || codePoint === 0xfe0f || codePoint >= 0x1f000
+      ? MAX_CLUSTER : MAX_TEXT_CLUSTER);
   const IS_COMBINED = 0x200000;
   const WIDTH_BITS = 0xC00000;
   const interned = new Map();
@@ -190,20 +205,20 @@
     const add = proto.addCodepointToCell;
     proto.addCodepointToCell = function (index, codePoint, width) {
       const content = this._data[index * 3];
-      if ((content & IS_COMBINED) && this._combined[index] && this._combined[index].length >= MAX_CLUSTER) {
+      const cluster = (content & IS_COMBINED) && this._combined[index];
+      if (cluster && cluster.length >= clusterLimit(cluster, codePoint)) {
         if (width) this._data[index * 3] = (content & ~WIDTH_BITS) | (width << 22);
         return;
       }
       add.call(this, index, codePoint, width);
-      // String += builds a rope: a 32-unit cluster costs ~1 KB per cell. Store
-      // one flat, shared copy instead.
+      // String += builds a rope: a long cluster costs ~1 KB per cell. Store one
+      // flat, shared copy instead (join() allocates a fresh flat string).
       const s = this._combined[index];
       if (typeof s === 'string') {
         let flat = interned.get(s);
         if (flat === undefined) {
           if (interned.size >= 4096) interned.clear();
-          flat = (' ' + s).slice(1);
-          flat.charCodeAt(0);
+          flat = s.split('').join('');
           interned.set(flat, flat);
         }
         this._combined[index] = flat;

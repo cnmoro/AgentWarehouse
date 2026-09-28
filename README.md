@@ -5,7 +5,7 @@ Several shells on this machine, open in the browser. Each terminal is a tab in t
 - **Rendering:** [xterm.js](https://xtermjs.org/), the same terminal emulator VS Code uses. `clear`, colors, progress bars, and full-screen TUIs (`htop`, `vim`, `less`) all work.
 - **Shells:** [node-pty](https://github.com/microsoft/node-pty) runs a real login shell for each tab.
 - **Reconnects:** the server keeps a headless xterm.js copy of each screen. If you reload the page, lose the connection, or open a second device, you get the current screen and scrollback back, including terminal modes such as mouse reporting and the scroll region. Programs keep running while no browser is connected.
-- **Flow control:** the browser acknowledges output as it renders it, and the server pauses the program when the browser falls behind. Ctrl+C during a flood of output (`yes`, a big `cat`) takes effect in well under a second. A browser that stops reading for 5 seconds (a sleeping laptop, say) no longer holds the program back; it gets a fresh copy of the screen when it wakes up.
+- **Flow control:** the browser acknowledges output as it renders it, and the server pauses the program when the browser falls behind. Ctrl+C during a flood of ordinary output (`yes`, a big `cat`) takes effect in well under a second; floods of deliberately expensive escape sequences can take a few seconds on a very large screen. A browser that stops reading for 5 seconds (a sleeping laptop, say) no longer holds the program back; it gets a fresh copy of the screen when it wakes up.
 
 ## Setup
 
@@ -75,9 +75,10 @@ Some terminal features are limited on purpose, because programs (or files you `c
 
 - OSC 8 hyperlinks are ignored. Plain URLs in the output are still clickable.
 - Escape strings (titles, clipboard, sixel, etc.) over 64 KB and colour palette sequences over 16 KB are ignored.
-- A single character cell keeps at most 16 combining characters. Real emoji sequences and accents are shorter than that.
+- A character cell holds at most 6 UTF-16 code units (a letter with up to five accents), or 16 for emoji sequences (enough for family emoji and flags). Extra combining marks are dropped.
 - Huge repeat counts in scroll, insert/delete-line, tab and repeat-character sequences are cut to the screen size.
 - In the browser, colour changes and cursor-blink changes are rate-limited during floods.
+- Answers to terminal queries (cursor position, colours, etc.) are dropped while more than about a thousand are waiting for a program that isn't reading them.
 
 ## Security
 
