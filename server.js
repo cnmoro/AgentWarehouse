@@ -70,9 +70,12 @@ for (const name of ['SESSION_TTL_HOURS', 'SESSION_IDLE_HOURS', 'SCROLLBACK', 'PO
     process.exit(EX_CONFIG);
   }
 }
-if (process.env.HISTORY_LINES !== undefined && !(Number(process.env.HISTORY_LINES) >= 0)) {
-  console.error(`HISTORY_LINES must be 0 or a positive number, got "${process.env.HISTORY_LINES}".`);
-  process.exit(EX_CONFIG);
+for (const name of ['HISTORY_LINES', 'HISTORY_MB']) {
+  const v = process.env[name];
+  if (v !== undefined && !(Number(v) >= 0 && Number.isFinite(Number(v)))) {
+    console.error(`${name} must be 0 or a positive number, got "${v}".`);
+    process.exit(EX_CONFIG);
+  }
 }
 if (HOST === '0.0.0.0' || HOST === '::') {
   console.warn('WARNING: listening on all interfaces. Anyone who can reach this port gets a login page for a shell.');
@@ -437,7 +440,7 @@ function handleMessage(client, raw) {
       break;
     case 'hist':
       if (tab && num(msg.from) >= 0) {
-        const r = tab.historyRead(msg.from, Math.min(1000, num(msg.count) || 0));
+        const r = tab.historyRead(msg.from, Math.min(1000, num(msg.count) || 0), 512 * 1024);
         send(client, { t: 'histLines', id: tab.id, from: r.from, lines: r.lines, info: r.info });
       }
       break;

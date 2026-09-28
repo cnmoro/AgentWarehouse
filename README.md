@@ -73,7 +73,7 @@ The terminal itself keeps the last 10,000 lines (`SCROLLBACK`). Everything older
 - Select and copy text as on any web page. Long lines that the terminal wrapped are copied as one line.
 - `clear` and `reset` erase the history too, as they erase the scrollback in any terminal. The history survives a server restart (the programs that produced it do not). Closing a tab deletes its history.
 
-History is stored in `data/history/<tab>/` (readable only by you). At the default limit a tab uses about 10–30 MB of disk; the oldest lines are dropped beyond it. Set `HISTORY_LINES=0` to turn it off. Archiving costs some throughput during extreme output floods (about 25% at a full-speed `cat` of a log), none at normal use.
+History is stored in `data/history/<tab>/` (readable only by you). Each tab keeps at most `HISTORY_LINES` lines (default 200,000) and `HISTORY_MB` megabytes (default 64); the oldest lines are dropped beyond either limit. Plain text needs about 10–20 MB for 200,000 lines; heavily coloured output reaches the megabyte limit sooner. Set `HISTORY_LINES=0` to turn history off. If the disk fills up, history stops for that tab and the terminal carries on. Archiving costs some throughput during extreme output floods (about 25% at a full-speed `cat` of a log), none at normal use.
 
 Tab names and working folders are saved to `data/tabs.json`. After a server restart the tabs come back with fresh shells. Running programs do not survive a restart.
 
@@ -119,7 +119,7 @@ npm run set-user -- --remove someone@example.com     # remove a user
 
 ## Configuration
 
-See `.env.example`: `PORT`, `HOST`, `ALLOWED_HOSTS`, `TRUST_PROXY`, `SESSION_TTL_HOURS`, `SESSION_IDLE_HOURS`, `SCROLLBACK`, `HISTORY_LINES`.
+See `.env.example`: `PORT`, `HOST`, `ALLOWED_HOSTS`, `TRUST_PROXY`, `SESSION_TTL_HOURS`, `SESSION_IDLE_HOURS`, `SCROLLBACK`, `HISTORY_LINES`, `HISTORY_MB`.
 
 ## Layout
 

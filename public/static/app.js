@@ -94,6 +94,10 @@ function connect() {
     state.retry = 0;
     setConnected(true);
     startHeartbeat(ws);
+    if (hist.open) {
+      hist.requested.clear();
+      send({ t: 'histInfo', id: hist.id });
+    }
     // The server forgot what this page was attached to. Hidden tabs re-attach
     // when next shown; the visible one re-attaches as soon as the list arrives.
     for (const [id, v] of state.views) {
@@ -756,7 +760,7 @@ tabsEl.addEventListener('drop', (e) => {
 const HIST_PAGE = 200;
 const HIST_MAX_PX = 15_000_000; // stay well below browsers' element height limits
 const hist = {
-  open: false, id: null, info: null, pages: new Map(), requested: new Set(),
+  open: false, id: null, info: null, pages: new Map(), requested: new Map(), queue: [], stale: new Set(),
   rowH: 18, found: -1, searchSeq: 0, stick: true, poll: null, pendingJump: null,
 };
 const histEls = {
@@ -884,18 +888,18 @@ function histRender() {
     rows.appendChild(div);
   }
   while (rows.children.length > Math.max(0, last - first)) rows.lastChild.remove();
+  const need = new Set();
   for (let n = first; n < last; n++) {
     const div = rows.children[n - first];
     const page = Math.floor(n / HIST_PAGE);
     const lines = hist.pages.get(page);
     const record = lines && lines[n - page * HIST_PAGE];
-    const key = record === undefined ? `?${n}` : `${n}`;
+    const key = record === undefined ? `?${n}` : `${n}\u0000${record}`;
     if (div.dataset.key !== key) {
       div.dataset.key = key;
       if (record === undefined) {
         div.className = 'hrow loading';
         div.textContent = '…';
-        histFetch(page);
       } else {
         div.className = 'hrow';
         renderRecord(record, div);
@@ -903,8 +907,13 @@ function histRender() {
       div.dataset.line = String(n);
       div.dataset.wrapped = record && record[0] === 'w' ? '1' : '';
     }
+    if (record === undefined || hist.stale.has(page)) need.add(page);
     div.classList.toggle('found', n === hist.found);
   }
+  // Only pages in view are requested; scrolling past others drops them.
+  const now = Date.now();
+  hist.queue = [...need].filter((p) => !(hist.requested.get(p) && now - hist.requested.get(p) < 5000));
+  histPump();
   const at = Math.min(hist.info.total, first + 1);
   histEls.status.textContent = hist.statusMsg
     || `Line ${(at - hist.info.start).toLocaleString()} of ${(hist.info.total - hist.info.start).toLocaleString()}`;
@@ -915,10 +924,30 @@ function histRender() {
   }
 }
 
-function histFetch(page) {
-  if (hist.requested.has(page)) return;
-  hist.requested.add(page);
-  send({ t: 'hist', id: hist.id, from: page * HIST_PAGE, count: HIST_PAGE });
+// At most two page requests in flight: coloured pages can be large, and a
+// slow link must not pile them up. A request without an answer in 5 s (lost
+// in a reconnect) is retried.
+const HIST_IN_FLIGHT = 2;
+function histPump() {
+  const now = Date.now();
+  for (const [p, t] of hist.requested) if (now - t >= 5000) hist.requested.delete(p);
+  while (hist.requested.size < HIST_IN_FLIGHT && hist.queue.length) {
+    const page = hist.queue.shift();
+    const arr = hist.pages.get(page) || [];
+    let first = 0;
+    if (hist.stale.has(page) && hist.info) {
+      first = Math.max(0, Math.min(HIST_PAGE - 1, hist.info.archived - page * HIST_PAGE));
+    } else {
+      while (first < HIST_PAGE && arr[first] !== undefined) first++;
+      if (first >= HIST_PAGE) continue;
+    }
+    const from = page * HIST_PAGE + first;
+    if (!send({ t: 'hist', id: hist.id, from, count: HIST_PAGE - first })) {
+      hist.queue.unshift(page);
+      return; // offline: try again after reconnecting
+    }
+    hist.requested.set(page, now);
+  }
 }
 
 function histSetInfo(info) {
@@ -926,7 +955,15 @@ function histSetInfo(info) {
     // Line numbers moved (clear, resize): everything cached is stale.
     hist.pages.clear();
     hist.requested.clear();
+    hist.queue = [];
     for (const r of histEls.rows.children) r.dataset.key = '';
+    hist.stale.clear();
+  } else if (info.archived < info.total) {
+    // The lines after the archive are the live screen and can still change
+    // (clear, progress bars): mark their pages stale. They keep showing until
+    // fresh copies arrive, so nothing flickers.
+    const firstLive = Math.floor(info.archived / HIST_PAGE);
+    for (const p of hist.pages.keys()) if (p >= firstLive) hist.stale.add(p);
   }
   hist.info = info;
 }
@@ -948,10 +985,9 @@ function onHistLines(msg) {
     if (!arr) hist.pages.set(page, (arr = []));
     arr[abs - page * HIST_PAGE] = msg.lines[k];
   }
-  const firstPage = Math.floor(msg.from / HIST_PAGE);
-  const lastPage = Math.floor((msg.from + Math.max(0, msg.lines.length - 1)) / HIST_PAGE);
-  for (let p = firstPage; p <= lastPage; p++) hist.requested.delete(p);
   hist.requested.delete(Math.floor(msg.from / HIST_PAGE));
+  hist.stale.delete(Math.floor(msg.from / HIST_PAGE));
+  histPump();
   if (atBottom && hist.stick) histScrollToLine(hist.info.total - 1, 'bottom');
   else histRender();
 }
@@ -964,11 +1000,12 @@ function histAtBottom() {
 function onHistInfo(msg) {
   if (msg.id === state.active && histEls.pill.dataset.waiting === '1') {
     histEls.pill.dataset.waiting = '';
-    const older = msg.info.archived - msg.info.start;
+    // Lines older than the terminal's own scrollback.
+    const older = msg.info.memStart - msg.info.start;
     const v = state.views.get(state.active);
     if (older > 0 && v && v.term.buffer.active.viewportY === 0 && v.term.buffer.active.type === 'normal') {
       histEls.pill.textContent = `↑ ${older.toLocaleString()} older lines · Open history (Ctrl+Shift+H)`;
-      histEls.pill.dataset.line = String(msg.info.archived - 1);
+      histEls.pill.dataset.line = String(msg.info.memStart - 1);
       histEls.pill.hidden = false;
     }
   }
@@ -982,13 +1019,7 @@ function onHistInfo(msg) {
     histScrollToLine(line, where);
     return;
   }
-  if (grew) {
-    // The newest page is still filling up; refetch it.
-    const lastPage = Math.floor((hist.info.total - 1) / HIST_PAGE);
-    hist.pages.delete(lastPage);
-    hist.requested.delete(lastPage);
-  }
-  if (atBottom && hist.stick) histScrollToLine(hist.info.total - 1, 'bottom');
+  if (atBottom && hist.stick && grew) histScrollToLine(hist.info.total - 1, 'bottom');
   else histRender();
 }
 
@@ -1040,6 +1071,8 @@ function histOpen(line = null, where = 'bottom') {
   hist.info = null;
   hist.pages.clear();
   hist.requested.clear();
+  hist.queue = [];
+  hist.stale.clear();
   hist.found = -1;
   hist.statusMsg = '';
   hist.stick = line === null;
