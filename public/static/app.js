@@ -1,5 +1,5 @@
 'use strict';
-/* global Terminal, FitAddon, WebLinksAddon, WebglAddon, Unicode11Addon, clampRepeatCounts */
+/* global Terminal, FitAddon, WebLinksAddon, WebglAddon, Unicode11Addon, clampRepeatCounts, dropHyperlinks */
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -207,8 +207,6 @@ function createView(id) {
     minimumContrastRatio: 4.5,
     macOptionIsMeta: true,
     rightClickSelectsWord: false,
-    // OSC 8 hyperlinks from program output: only ever open http(s).
-    linkHandler: { activate: (e, uri) => openLink(uri), allowNonHttpProtocols: false },
     disableStdin: !state.connected,
   });
   const fit = new FitAddon.FitAddon();
@@ -218,6 +216,7 @@ function createView(id) {
   term.unicode.activeVersion = '11';
   silenceQueries(term);
   clampRepeatCounts(term);
+  dropHyperlinks(term);
   term.open(el);
 
   term.attachCustomKeyEventHandler((e) => handleKey(term, e));

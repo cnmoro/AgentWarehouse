@@ -24,12 +24,18 @@
       if (typeof ih[method] !== 'function') continue;
       term.parser.registerCsiHandler({ final }, (params) => {
         const n = params[0];
-        // T with several parameters is the old mouse-highlight command, not a scroll.
-        if (typeof n !== 'number' || n <= limit() || (final === 'T' && params.length > 1)) return false;
+        if (typeof n !== 'number' || n <= limit()) return false;
         return ih[method]({ params: [limit()], length: 1 });
       });
     }
   }
-  if (typeof module === 'object' && module.exports) module.exports = { clampRepeatCounts };
-  else root.clampRepeatCounts = clampRepeatCounts;
+  // OSC 8 hyperlinks cost xterm a buffer marker each (~3 KB) plus work on every
+  // scrollback trim; a stream of unique links runs a process out of memory.
+  // Plain URLs are still clickable through the web-links addon.
+  function dropHyperlinks(term) {
+    term.parser.registerOscHandler(8, () => true);
+  }
+
+  if (typeof module === 'object' && module.exports) module.exports = { clampRepeatCounts, dropHyperlinks };
+  else Object.assign(root, { clampRepeatCounts, dropHyperlinks });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
