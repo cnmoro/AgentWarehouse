@@ -1,36 +1,51 @@
-# Sandboxed instance (Docker)
+# Sandboxed instance (Docker + gVisor)
 
 A web terminal for someone who must not see this machine. The whole app runs in
-a container: its shells see only one host folder (mounted as their home), have
-no sudo or Docker access, and can reach the internet but not this machine, the
-LAN, the tailnet or any VPN. The web port is published only on the Tailscale IP.
+a container under gVisor (runsc), which gives the container its own kernel, so
+the user can have sudo inside without being root on the host. Their shells:
 
-## Setup (example: user "alice" on port 17660)
+- see only their own host folder (mounted as their home);
+- can `sudo apt install`, add users, etc.; everything installed persists across
+  restarts and re-creation (/usr, /etc, /var, /opt, /root and /srv are host
+  folders; only /tmp and new top-level folders are lost);
+- reach the internet, but not this machine, the LAN, the tailnet or any VPN;
+- are reachable only on this machine's Tailscale IP.
+
+## One-time machine setup
 
 ```sh
-# Image, with the login name as the Linux user inside the container.
-docker build -t web-terminal-sandbox:alice --build-arg SANDBOX_USER=alice -f deploy/sandbox/Dockerfile .
+# gVisor, plus a Docker runtime that honours setuid (needed for sudo).
+curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" | sudo tee /etc/apt/sources.list.d/gvisor.list
+sudo apt-get update && sudo apt-get install -y runsc
+# In /etc/docker/daemon.json:
+#   "runtimes": { "runsc-suid": { "path": "/usr/bin/runsc", "runtimeArgs": ["--allow-suid"] } }
+sudo systemctl reload docker        # reload, not restart: other containers keep running
 
-# Firewall (once per machine): root service that re-applies the rules when Docker starts.
+# Firewall: root service that re-applies the rules whenever Docker starts.
 sudo install -m 755 deploy/sandbox/firewall.sh /usr/local/sbin/sandbox-firewall.sh
 sudo install -m 644 deploy/sandbox/sandbox-firewall.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now sandbox-firewall
 docker network create --subnet 172.30.53.0/24 -o com.docker.network.bridge.name=br-sandbox sandbox-net
-
-# Their folder and login.
-mkdir -p /mnt/dados1/alice && chmod 700 /mnt/dados1/alice
-DATA_DIR=data-17660 npm run set-user
-
-TS_IP=$(tailscale ip -4)
-docker run -d --name web-terminal-alice --init --restart unless-stopped \
-  --network sandbox-net --dns 1.1.1.1 --dns 8.8.8.8 \
-  -p "$TS_IP:17660:17660" \
-  -e PORT=17660 -e ALLOWED_HOSTS="$TS_IP,$(tailscale status --json | jq -r .Self.DNSName | sed 's/\.$//')" \
-  -v /mnt/dados1/alice:/home/alice -v "$PWD/data-17660:/data" \
-  --hostname sandbox --cap-drop ALL --security-opt no-new-privileges \
-  --memory 8g --cpus 4 --pids-limit 1024 \
-  web-terminal-sandbox:alice
 ```
 
-Files the user creates belong to uid 1000 on the host. Rebuild the image and
-recreate the container to update the app; the home folder and tabs are kept.
+## Per user (example: alice on port 17660)
+
+```sh
+docker build -t web-terminal-sandbox:alice --build-arg SANDBOX_USER=alice -f deploy/sandbox/Dockerfile .
+DATA_DIR=data-17660 npm run set-user
+deploy/sandbox/run.sh alice 17660
+```
+
+`run.sh` is safe to run again (after rebuilding the image to update the app, or
+to change limits): it re-creates the container and keeps all data. Folders:
+`/mnt/dados1/alice` (home), `/mnt/dados1/alice-system` (system folders, filled
+from the image on the first run only), `data-17660/` (login and tabs).
+
+Notes:
+- DNS inside uses 1.1.1.1 / 8.8.8.8 through `resolv.conf`: Docker's built-in
+  DNS does not work under gVisor.
+- Docker's `--init` can't be used (its binary is mounted into the persistent
+  /usr), so the image runs tini itself.
+- Files the user creates are owned by uid 1000 on the host, or by root when
+  created with sudo.
