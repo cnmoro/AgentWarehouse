@@ -1,0 +1,24 @@
+# Extra instances, one per port, each with its own logins and tabs in
+# data-<port>/. Install and start one on port 17652:
+#   cp deploy/web-terminal@.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   DATA_DIR=data-17652 npm run set-user
+#   systemctl --user enable --now web-terminal@17652
+[Unit]
+Description=Web Terminal (port %i)
+Wants=sys-subsystem-net-devices-tailscale0.device
+After=sys-subsystem-net-devices-tailscale0.device
+
+[Service]
+WorkingDirectory=/mnt/dados1/claude-manager
+Environment=PORT=%i
+Environment=DATA_DIR=/mnt/dados1/claude-manager/data-%i
+ExecStart=/usr/bin/node --env-file-if-exists=.env server.js
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=78
+KillMode=control-group
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

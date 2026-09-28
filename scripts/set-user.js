@@ -2,12 +2,13 @@
 'use strict';
 // Create or update a login.   npm run set-user
 // Remove a login.             npm run set-user -- --remove someone@example.com
+// For another instance, set DATA_DIR the same way:  DATA_DIR=/path npm run set-user
 const readline = require('readline');
 const fs = require('fs');
 const path = require('path');
-const { hashPassword, normalizeEmail, saveUsers } = require('../lib/auth');
+const { DATA_DIR, hashPassword, normalizeEmail, saveUsers } = require('../lib/auth');
 
-const USERS_FILE = path.join(__dirname, '..', 'data', 'users.json');
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
 
 // Strict read: if the file is damaged, stop rather than overwrite every other account.
 function loadUsers() {
@@ -53,8 +54,8 @@ async function main() {
     return console.log(`Removed ${email}. Their open sessions end within 10 seconds.`);
   }
 
-  const email = normalizeEmail(await ask('Email: '));
-  if (!/^[^\s@]+@[^\s@]+$/.test(email)) throw new Error('That does not look like an email address.');
+  const email = normalizeEmail(await ask('Email or username: '));
+  if (!/^[^\s@]+(@[^\s@]+)?$/.test(email)) throw new Error('That does not look like an email address or username.');
 
   const password = await ask(`Password (min ${MIN_LENGTH} chars): `, { hidden: true });
   if (password.length < MIN_LENGTH) throw new Error(`Password must be at least ${MIN_LENGTH} characters.`);

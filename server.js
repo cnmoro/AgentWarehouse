@@ -209,7 +209,7 @@ app.post('/api/login', express.json({ limit: '4kb' }), async (req, res) => {
   const { email, password } = req.body || {};
   if (typeof email !== 'string' || typeof password !== 'string') {
     limiter.end(ip, false);
-    return res.status(400).json({ error: 'Email and password are required' });
+    return res.status(400).json({ error: 'Email or username and password are required' });
   }
   let user = null;
   try {
@@ -219,7 +219,7 @@ app.post('/api/login', express.json({ limit: '4kb' }), async (req, res) => {
   }
   if (!user) {
     console.warn(`[auth] failed login for "${forLog(email)}" from ${ip}`);
-    return res.status(401).json({ error: 'Invalid email or password' });
+    return res.status(401).json({ error: 'Invalid login or password' });
   }
   console.log(`[auth] ${user.email} logged in from ${ip}`);
   setSessionCookie(req, res, sessions.create(user), Math.floor(sessions.ttlMs / 1000));
