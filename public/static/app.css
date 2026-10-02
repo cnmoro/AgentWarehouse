@@ -141,6 +141,11 @@ body.resizing #main { pointer-events: none; }
   padding: 6px 12px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.4);
 }
 .banner[hidden] { display: none; }
+.banner-btn {
+  margin-left: 10px; padding: 2px 10px; border-radius: 4px; border: 1px solid #8a4542;
+  background: #4a2624; color: #ffd6d3; font-size: 12px;
+}
+.banner-btn:hover { background: #5c2f2c; }
 .toast { top: auto; bottom: 16px; background: var(--panel-2); color: var(--text); border-color: var(--line); }
 .icon-btn:disabled, .primary:disabled { opacity: .4; cursor: not-allowed; }
 #main.offline #terms { opacity: .55; }

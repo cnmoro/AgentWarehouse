@@ -34,6 +34,8 @@ const state = {
   renaming: null,
   retry: 0,
   retryTimer: null,
+  connectStarted: 0,
+  lastHeard: 0,
   leaving: false,
   fontSize: Number(storage('wt.fontSize')) || 14,
   scrollback: 10000,    // replaced by the server's value on connect
@@ -83,30 +85,61 @@ function goToLogin() {
   location.replace('/login');
 }
 
+// Reconnecting must survive networks that drop packets silently (Wi-Fi
+// changes, laptop sleep, Tailscale re-routing): there, a connection attempt
+// can hang for minutes, and Chrome lets only one handshake per server be
+// pending, so a stuck attempt blocks every later one. Hence: attempts time
+// out, a lost connection always schedules the next attempt before anything
+// else, and a watchdog restarts the cycle if it ever stops.
+const CONNECT_TIMEOUT = 6000;
+
 function connect() {
   clearTimeout(state.retryTimer);
   state.retryTimer = null;
-  if (state.ws && state.ws.readyState <= WebSocket.OPEN) return;
-  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+  if (state.leaving) return;
+  const cur = state.ws;
+  if (cur && cur.readyState === WebSocket.OPEN) return;
+  if (cur && cur.readyState === WebSocket.CONNECTING) {
+    if (Date.now() - state.connectStarted < CONNECT_TIMEOUT) return; // still in time
+    abandon(cur);
+  }
+  let ws;
+  try {
+    ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+  } catch {
+    scheduleRetry();
+    return;
+  }
   state.ws = ws;
+  state.connectStarted = Date.now();
+  const timeout = setTimeout(() => {
+    if (state.ws === ws && ws.readyState === WebSocket.CONNECTING) lose(ws);
+  }, CONNECT_TIMEOUT);
 
   ws.onopen = () => {
+    clearTimeout(timeout);
+    if (state.ws !== ws) return;
     state.retry = 0;
-    setConnected(true);
     startHeartbeat(ws);
-    if (hist.open) {
-      hist.requested.clear();
-      send({ t: 'histInfo', id: hist.id });
-    }
-    // The server forgot what this page was attached to. Hidden tabs re-attach
-    // when next shown; the visible one re-attaches as soon as the list arrives.
-    for (const [id, v] of state.views) {
-      if (id === state.active) v.attached = false;
-      else disposeView(id);
+    setConnected(true);
+    try {
+      if (hist.open) {
+        hist.requested.clear();
+        send({ t: 'histInfo', id: hist.id });
+      }
+      // The server forgot what this page was attached to. Hidden tabs re-attach
+      // when next shown; the visible one re-attaches as soon as the list arrives.
+      for (const [id, v] of state.views) {
+        if (id === state.active) v.attached = false;
+        else disposeView(id);
+      }
+    } catch (err) {
+      console.error('after reconnect:', err);
     }
   };
 
   ws.onmessage = (ev) => {
+    state.lastHeard = Date.now(); // any message proves the connection is alive
     const msg = JSON.parse(ev.data);
     switch (msg.t) {
       case 'hello':
@@ -121,7 +154,7 @@ function connect() {
       case 'act': markActivity(msg.id); break;
       case 'created': activate(msg.id); break;
       case 'error': toast(msg.msg); break;
-      case 'pong': state.lastPong = Date.now(); break;
+      case 'pong': break;
       case 'histInfo': onHistInfo(msg); break;
       case 'histLines': onHistLines(msg); break;
       case 'histFound': onHistFound(msg); break;
@@ -129,42 +162,95 @@ function connect() {
   };
 
   ws.onclose = (ev) => {
-    if (state.ws !== ws) return;
-    state.ws = null;
-    setConnected(false);
-    if (ev.code === 4001) { goToLogin(); return; }
-    // A rejected handshake (session gone, e.g. after a server restart) looks like
-    // a plain close; ask the server whether we are still signed in.
-    fetch('/', { redirect: 'manual', cache: 'no-store' }).then((r) => {
-      if (r.type === 'opaqueredirect' || r.redirected) goToLogin();
-    }).catch(() => {});
-    const delay = Math.min(8000, 500 * 2 ** state.retry++);
-    state.retryTimer = setTimeout(connect, delay);
+    clearTimeout(timeout);
+    if (state.ws === ws) lose(ws, ev.code);
   };
 }
 
-// A network that dies silently (phone changing networks, laptop lid) leaves
-// the socket "open" for minutes. Ping every 15 s; no answer in 10 s = dead.
-function startHeartbeat(ws) {
-  state.lastPong = Date.now();
-  const timer = setInterval(() => {
-    if (state.ws !== ws || ws.readyState !== WebSocket.OPEN) { clearInterval(timer); return; }
-    if (Date.now() - state.lastPong > 25_000) {
-      clearInterval(timer);
-      ws.close();
-      ws.onclose({ code: 4000 }); // the close handshake itself may never finish
-      return;
-    }
-    send({ t: 'ping' });
-  }, 15_000);
+// Stop listening to a socket and close it (closing a pending one also frees
+// Chrome's one-handshake-per-server slot).
+function abandon(ws) {
+  ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+  try { ws.close(); } catch { /* already closed */ }
+  if (state.ws === ws) state.ws = null;
 }
 
-// Reconnect right away instead of waiting out the backoff.
+// The connection is gone (or never came up): schedule the next attempt first,
+// so that nothing below can leave the page without one.
+function lose(ws, code) {
+  abandon(ws);
+  if (code === 4001) { goToLogin(); return; }
+  scheduleRetry();
+  try { setConnected(false); } catch (err) { console.error('setConnected:', err); }
+  // A rejected handshake (session gone, e.g. after a server restart) looks like
+  // a plain close; ask the server whether we are still signed in.
+  fetch('/', { redirect: 'manual', cache: 'no-store' }).then((r) => {
+    if (r.type === 'opaqueredirect' || r.redirected) goToLogin();
+  }).catch(() => {});
+}
+
+// 0.4 s, 0.8 s, 1.6 s, 3.2 s, then every 5 s; jittered so many tabs don't
+// reconnect in lockstep after a server restart.
+function scheduleRetry() {
+  clearTimeout(state.retryTimer);
+  const base = Math.min(5000, 400 * 2 ** state.retry++);
+  state.retryTimer = setTimeout(connect, base * (0.6 + Math.random() * 0.4));
+}
+
+// A network that dies silently leaves the socket "open" for minutes. Every
+// 5 s: if a ping has been unanswered for 8 s (and nothing else arrived since),
+// the connection is dead. Waiting is measured from the ping itself, so the
+// once-a-minute timers of a background tab don't make it look dead.
+function startHeartbeat(ws) {
+  state.lastHeard = Date.now();
+  let pingedAt = 0;
+  const timer = setInterval(() => {
+    if (state.ws !== ws || ws.readyState !== WebSocket.OPEN) { clearInterval(timer); return; }
+    const answered = state.lastHeard >= pingedAt;
+    if (!answered && Date.now() - pingedAt > 8000) {
+      clearInterval(timer);
+      lose(ws, 4000);
+      return;
+    }
+    if (answered) {
+      pingedAt = Date.now();
+      send({ t: 'ping' });
+    }
+  }, 5000);
+}
+
+// Try right away (network back, tab shown, user typing) instead of waiting
+// out the backoff; an attempt that is already taking a while is replaced.
 function reconnectNow() {
-  if (!state.connected && state.retryTimer) connect();
+  if (state.connected || state.leaving) return;
+  const cur = state.ws;
+  if (cur && cur.readyState === WebSocket.CONNECTING) {
+    if (Date.now() - state.connectStarted < 1500) return;
+    abandon(cur);
+  }
+  state.retry = 0;
+  connect();
 }
 window.addEventListener('online', reconnectNow);
+$('#retry-now').onclick = () => {
+  // The user asked: replace even a fresh attempt.
+  if (state.ws && state.ws.readyState === WebSocket.CONNECTING) abandon(state.ws);
+  reconnectNow();
+};
+window.addEventListener('focus', reconnectNow);
+window.addEventListener('pageshow', reconnectNow);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) reconnectNow(); });
+document.addEventListener('keydown', () => { if (!state.connected) reconnectNow(); }, true);
+document.addEventListener('pointerdown', () => { if (!state.connected) reconnectNow(); }, true);
+
+// Watchdog: whatever happened, a disconnected page always has an attempt
+// running or scheduled.
+setInterval(() => {
+  if (state.connected || state.leaving || state.retryTimer) return;
+  if (state.ws && state.ws.readyState === WebSocket.CONNECTING
+      && Date.now() - state.connectStarted < CONNECT_TIMEOUT) return;
+  connect();
+}, 5000);
 
 let toastTimer = null;
 function toast(text, ms = 4000) {
