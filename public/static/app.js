@@ -1271,6 +1271,71 @@ window.addEventListener('beforeunload', (e) => {
   e.returnValue = '';
 });
 
+// Sidebar width: drag its right edge (or focus the edge and use the arrow
+// keys); double-click resets it. Remembered per browser. The terminal refits
+// through the ResizeObserver below.
+const SIDEBAR_DEFAULT = 240;
+const SIDEBAR_MIN = 160;
+const resizerEl = $('#sidebar-resizer');
+
+function sidebarMax() {
+  return Math.max(SIDEBAR_MIN, Math.min(640, Math.round(window.innerWidth * 0.6)));
+}
+
+function setSidebarWidth(px, { save = false } = {}) {
+  const w = Math.round(Math.min(sidebarMax(), Math.max(SIDEBAR_MIN, px)));
+  appEl.style.setProperty('--sidebar-w', `${w}px`);
+  resizerEl.setAttribute('aria-valuenow', String(w));
+  if (save) storage('wt.sidebarWidth', w === SIDEBAR_DEFAULT ? '' : String(w));
+  return w;
+}
+
+function sidebarWidth() {
+  return $('#sidebar').getBoundingClientRect().width || SIDEBAR_DEFAULT;
+}
+
+resizerEl.setAttribute('aria-valuemin', String(SIDEBAR_MIN));
+setSidebarWidth(Number(storage('wt.sidebarWidth')) || SIDEBAR_DEFAULT);
+
+resizerEl.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  resizerEl.setPointerCapture(e.pointerId);
+  const startX = e.clientX;
+  const startW = sidebarWidth();
+  document.body.classList.add('resizing');
+  const move = (ev) => setSidebarWidth(startW + ev.clientX - startX);
+  const end = (ev) => {
+    resizerEl.removeEventListener('pointermove', move);
+    resizerEl.removeEventListener('pointerup', end);
+    resizerEl.removeEventListener('pointercancel', end);
+    document.body.classList.remove('resizing');
+    setSidebarWidth(startW + ev.clientX - startX, { save: true });
+    focusActive();
+  };
+  resizerEl.addEventListener('pointermove', move);
+  resizerEl.addEventListener('pointerup', end);
+  resizerEl.addEventListener('pointercancel', end);
+});
+resizerEl.addEventListener('dblclick', () => {
+  setSidebarWidth(SIDEBAR_DEFAULT, { save: true });
+  focusActive();
+});
+resizerEl.addEventListener('keydown', (e) => {
+  const step = e.shiftKey ? 64 : 16;
+  if (e.key === 'ArrowLeft') setSidebarWidth(sidebarWidth() - step, { save: true });
+  else if (e.key === 'ArrowRight') setSidebarWidth(sidebarWidth() + step, { save: true });
+  else if (e.key === 'Home') setSidebarWidth(SIDEBAR_DEFAULT, { save: true });
+  else if (e.key === 'Escape' || e.key === 'Enter') focusActive();
+  else return;
+  e.preventDefault();
+});
+// A narrower window may no longer fit the remembered width; clamp it (without
+// forgetting the saved value, which applies again once the window is wider).
+window.addEventListener('resize', () => {
+  setSidebarWidth(Number(storage('wt.sidebarWidth')) || SIDEBAR_DEFAULT);
+});
+
 setSidebar(!(storage('wt.collapsed') || mobile.matches));
 mobile.addEventListener('change', () => setSidebar(!mobile.matches && !storage('wt.collapsed')));
 
