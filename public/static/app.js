@@ -167,12 +167,12 @@ window.addEventListener('online', reconnectNow);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) reconnectNow(); });
 
 let toastTimer = null;
-function toast(text) {
+function toast(text, ms = 4000) {
   const el = $('#toast');
   el.textContent = String(text || 'Something went wrong');
   el.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.hidden = true; }, 4000);
+  toastTimer = setTimeout(() => { el.hidden = true; }, ms);
 }
 
 // ------------------------------------------------------------------ terminals
@@ -213,6 +213,9 @@ function createView(id) {
     // Keeps text readable when a program picks colours close to our background.
     minimumContrastRatio: 4.5,
     macOptionIsMeta: true,
+    // Programs that take the mouse (claude, codex, vim, tmux) get the drags;
+    // Option+drag (Shift+drag elsewhere) still selects terminal text.
+    macOptionClickForcesSelection: true,
     rightClickSelectsWord: false,
     disableStdin: !state.connected,
   });
@@ -227,6 +230,29 @@ function createView(id) {
   term.open(el);
 
   term.attachCustomKeyEventHandler((e) => handleKey(term, e));
+  // Selecting text copies it, as in most terminals. xterm finishes the
+  // selection in its own (document-level) mouseup, hence the timeout; the
+  // click still counts as a user action for the plain-http copy fallback.
+  el.addEventListener('mouseup', (e) => {
+    if (e.button !== 0) return;
+    setTimeout(() => {
+      const text = term.hasSelection() ? term.getSelection() : '';
+      if (text.trim()) copyAndTell(text);
+    }, 0);
+  });
+  // OSC 52: programs that do their own selection (claude, codex, tmux, vim
+  // with clipboard support) copy by sending the text in this sequence. Only
+  // writes are honoured, never reads, and only for the terminal on screen.
+  term.parser.registerOscHandler(52, (data) => {
+    const b64 = data.slice(data.indexOf(';') + 1);
+    if (!b64 || b64 === '?' || id !== state.active || !document.hasFocus()) return true;
+    try {
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const text = new TextDecoder().decode(bytes);
+      if (text) copyAndTell(text);
+    } catch { /* not valid base64: ignore */ }
+    return true;
+  });
   term.onData((d) => {
     reclaimSize(id);
     if (state.ctrlSticky && d.length === 1) {
@@ -476,10 +502,11 @@ function onList(tabs) {
 
 // ------------------------------------------------------------------ clipboard & keys
 
+// Resolves to true when the text reached the clipboard.
 async function copyText(text) {
-  if (!text) return;
+  if (!text) return false;
   if (navigator.clipboard && window.isSecureContext) {
-    try { await navigator.clipboard.writeText(text); return; } catch { /* fall through */ }
+    try { await navigator.clipboard.writeText(text); return true; } catch { /* fall through */ }
   }
   // Plain-http fallback (e.g. http://100.x.y.z): execCommand still works inside a key event.
   const ta = document.createElement('textarea');
@@ -488,9 +515,21 @@ async function copyText(text) {
   document.body.appendChild(ta);
   const prev = document.activeElement;
   ta.select();
-  try { document.execCommand('copy'); } catch { /* nothing else to try */ }
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { /* nothing else to try */ }
   ta.remove();
   if (prev) prev.focus();
+  return ok;
+}
+
+async function copyAndTell(text) {
+  const ok = await copyText(text);
+  if (ok) {
+    const lines = text.split('\n').length;
+    toast(lines > 1 ? `Copied ${lines} lines` : `Copied ${text.length} characters`, 1500);
+  } else {
+    toast(`The browser blocked the copy. Select the text again and press ${isMac ? '⌘C' : 'Ctrl+C'}.`);
+  }
 }
 
 function setFontSize(size) {
@@ -508,7 +547,7 @@ function handleKey(term, e) {
 
   // Ctrl+C copies when text is selected; otherwise it goes to the program (SIGINT).
   if (mod && !e.altKey && e.code === 'KeyC' && (e.shiftKey || term.hasSelection())) {
-    copyText(term.getSelection());
+    copyAndTell(term.getSelection());
     term.clearSelection();
     e.preventDefault();
     return false;

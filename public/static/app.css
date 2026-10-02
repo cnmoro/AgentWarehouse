@@ -98,8 +98,14 @@ body.resizing #main { pointer-events: none; }
   flex: 1; min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--accent);
   border-radius: 4px; padding: 2px 5px; font: inherit; user-select: text;
 }
-.tab .actions { display: flex; gap: 2px; visibility: hidden; }
-.tab:hover .actions, .tab.active .actions, .tab:focus-within .actions { visibility: visible; }
+.tab { position: relative; }
+/* The buttons take no room: they appear over the end of the name on hover. */
+.tab .actions {
+  display: none; gap: 2px; position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  padding-left: 4px; background: var(--panel-2); box-shadow: -12px 0 10px -2px var(--panel-2);
+}
+.tab:hover .actions, .tab:focus-within .actions { display: flex; }
+.tab:has(input.rename) .actions { display: none; }
 .tab .actions button {
   border: 0; background: transparent; color: var(--muted); width: 22px; height: 22px; border-radius: 4px;
   padding: 0; font-size: 13px; line-height: 1;
@@ -189,6 +195,7 @@ body.resizing #main { pointer-events: none; }
   #keybar button.on { background: var(--accent); color: #06121f; border-color: var(--accent); }
   #sidebar { position: absolute; z-index: 10; inset: 0 auto 0 0; box-shadow: 4px 0 24px rgba(0,0,0,.5); }
   #sidebar-resizer { display: none; }
-  .tab .actions { visibility: visible; }
+  /* No hover on touch screens: keep the buttons visible, in line. */
+  .tab .actions { display: flex; position: static; transform: none; background: none; box-shadow: none; padding: 0; }
   .tab .actions button { width: 30px; height: 30px; }
 }
