@@ -66,6 +66,18 @@ A yellow dot on a tab means the text on its screen changed since you last looked
 
 When two browsers show the same terminal, the one you used last sets its size, and the other follows it.
 
+### Files
+
+The folder button at the top of the sidebar (**Ctrl+Shift+F**, Cmd+Shift+F on a Mac) opens a file browser over the terminal, starting in your home folder.
+
+- **Navigate:** double-click folders, click the path to type one (`~` works), Backspace for the parent folder, Alt+←/→ for back and forward. Type a few letters to jump to a name; the filter box narrows the list.
+- **Places and pins:** Home, the folder of the terminal on screen, and the whole computer. Pin any folder or file with ☆ or the right-click menu; pins are saved on the server, per user.
+- **Preview:** click a file. Text shows with line numbers (the first 1 MB), images are shown, and binary files offer a download.
+- **Upload:** drop files or whole folders on the list (they go into the folder shown) or on a folder row, a pin or a path segment (they go there). The ⇪ buttons pick files or a folder. If something already exists you choose: replace, keep both, or skip.
+- **Right-click:** download (folders as .zip), copy the path, open a terminal tab in that folder, pin, rename, and move to the Trash. Delete also moves to the Trash; in places without one (such as /tmp) it asks before deleting for good.
+
+Everything runs as the server's user, so the file browser can reach exactly what that user's shell can.
+
 ### Long history
 
 The terminal itself keeps the last 10,000 lines (`SCROLLBACK`). Everything older is moved to disk, up to 200,000 lines per tab by default (`HISTORY_LINES`), and loaded only when you look at it:

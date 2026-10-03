@@ -12,6 +12,7 @@
   <div id="app">
     <nav id="rail" aria-label="Collapsed sidebar">
       <button id="expand" class="icon-btn" title="Show terminals" aria-label="Show terminals">☰</button>
+      <button class="icon-btn files-btn" title="Files (Ctrl+Shift+F)" aria-label="Files" hidden><svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M2 5.5A1.5 1.5 0 0 1 3.5 4h4l1.6 1.8h7.4A1.5 1.5 0 0 1 18 7.3v7.2a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 2 14.5z"/></svg></button>
       <button class="icon-btn new-tab" title="New terminal" aria-label="New terminal">+</button>
       <span class="conn" role="status" aria-label="Disconnected" title="Disconnected"></span>
     </nav>
@@ -19,6 +20,7 @@
       <div class="sidebar-head">
         <div class="brand"><span class="brand-mark" aria-hidden="true">&gt;_</span> Terminals</div>
         <div class="head-actions">
+          <button class="icon-btn files-btn" title="Files (Ctrl+Shift+F)" aria-label="Files" hidden><svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M2 5.5A1.5 1.5 0 0 1 3.5 4h4l1.6 1.8h7.4A1.5 1.5 0 0 1 18 7.3v7.2a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 2 14.5z"/></svg></button>
           <button class="icon-btn new-tab" title="New terminal (opens in the current tab's folder)" aria-label="New terminal">+</button>
           <button id="collapse" class="icon-btn" title="Hide sidebar" aria-label="Hide sidebar">«</button>
         </div>
@@ -76,6 +78,7 @@
       <div id="banner" class="banner" role="alert" hidden>Connection lost. Reconnecting… Typing is disabled until then.
         <button id="retry-now" class="banner-btn">Retry now</button></div>
       <div id="toast" class="banner toast" role="status" hidden></div>
+      <section id="files" class="files" hidden aria-label="Files"></section>
     </main>
   </div>
   <script src="/vendor/xterm.js"></script>
@@ -85,5 +88,6 @@
   <script src="/vendor/addon-unicode11.js"></script>
   <script src="/static/clamp.js"></script>
   <script src="/static/app.js"></script>
+  <script src="/static/files.js"></script>
 </body>
 </html>

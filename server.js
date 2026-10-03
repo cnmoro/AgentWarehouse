@@ -5,8 +5,9 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const express = require('express');
 const { WebSocketServer } = require('ws');
-const { checkCredentials, loadUsers, SessionStore, LoginLimiter } = require('./lib/auth');
+const { checkCredentials, loadUsers, SessionStore, LoginLimiter, DATA_DIR } = require('./lib/auth');
 const { TerminalManager, SCROLLBACK } = require('./lib/terminals');
+const files = require('./lib/files');
 
 // Configuration errors exit with 78 (EX_CONFIG); the systemd unit does not
 // restart on that code, since retrying cannot help.
@@ -241,6 +242,8 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(pub, 'index.html'));
 });
 
+app.use('/api/files', files.router({ sessionFrom, sameOrigin, dataDir: DATA_DIR, terminals }));
+
 app.use((req, res) => res.sendStatus(404));
 
 // No stack traces to the client (Express shows them unless NODE_ENV=production).
@@ -363,7 +366,7 @@ function onConnection(ws, session) {
   clients.add(client);
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
-  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK });
+  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, features: ['sessions', 'files'] });
   syncClient(client);
 
   ws.on('message', (raw) => {
@@ -418,9 +421,15 @@ function handleMessage(client, raw) {
     case 'create': {
       // With `group`: a new tab in that session. Otherwise a new session,
       // in the folder of the terminal `from`.
+      // `cwd` (from the file browser's "Open in terminal") overrides both.
       const from = typeof msg.from === 'string' ? terminals.get(msg.from) : null;
       const group = typeof msg.group === 'string' ? msg.group : undefined;
-      const created = terminals.create(str(msg.name), from ? from.currentCwd() : undefined, { group });
+      let cwd = from ? from.currentCwd() : undefined;
+      let explicit = false;
+      if (typeof msg.cwd === 'string') {
+        try { cwd = files.resolvePath(msg.cwd); explicit = true; } catch { /* keep the default */ }
+      }
+      const created = terminals.create(str(msg.name), cwd, { group, explicitCwd: explicit });
       if (created) send(client, { t: 'created', id: created.id });
       else send(client, { t: 'error', msg: 'Limit of 50 terminals reached. Close one first.' });
       break;

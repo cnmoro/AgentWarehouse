@@ -150,6 +150,8 @@ function connect() {
         $('#who').textContent = msg.email;
         $('#who').title = msg.email;
         if (msg.scrollback > 0) state.scrollback = msg.scrollback;
+        // Older servers have no file browser: its button stays hidden.
+        if (typeof Files !== 'undefined') Files.setAvailable(Array.isArray(msg.features) && msg.features.includes('files'));
         break;
       case 'list': onList(msg.tabs, msg.groups); break;
       case 'snap': onSnapshot(msg); break;
@@ -752,6 +754,12 @@ function handleKey(term, e) {
   // Ctrl+Shift+H: full history of this terminal, beyond the scrollback.
   if (mod && e.shiftKey && !e.altKey && e.code === 'KeyH') {
     histOpen();
+    e.preventDefault();
+    return false;
+  }
+  // Ctrl+Shift+F: the file browser.
+  if (mod && e.shiftKey && !e.altKey && e.code === 'KeyF' && typeof Files !== 'undefined') {
+    Files.toggle();
     e.preventDefault();
     return false;
   }
