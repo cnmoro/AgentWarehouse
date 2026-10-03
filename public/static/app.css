@@ -15,6 +15,20 @@
 }
 
 * { box-sizing: border-box; }
+
+/* Scrollbars of the sidebar, file browser, history and dialogs look like the
+   terminal's own (drawn by xterm): no track, a square 14 px bar in the text
+   colour at 20% opacity, 40% on hover, 50% while dragged. Chrome ignores
+   these pseudo-elements on anything that sets the standard scrollbar-color
+   or scrollbar-width, so those are left to browsers without them (Firefox). */
+::-webkit-scrollbar { width: 14px; height: 14px; background: transparent; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(214, 221, 230, .2); border-radius: 0; }
+::-webkit-scrollbar-thumb:hover { background: rgba(214, 221, 230, .4); }
+::-webkit-scrollbar-thumb:active { background: rgba(214, 221, 230, .5); }
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-color: rgba(214, 221, 230, .2) transparent; }
+}
 html, body { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--text); font: 14px/1.4 var(--sans); overflow: hidden; }
 button { font: inherit; color: inherit; cursor: pointer; }
