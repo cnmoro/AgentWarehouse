@@ -152,6 +152,56 @@ body.resizing #main { pointer-events: none; }
 
 #keybar { display: none; }
 
+/* ---------- tabs of the session on screen ---------- */
+.strip {
+  position: absolute; top: 0; left: 0; right: 0; height: 34px; z-index: 6;
+  display: flex; align-items: stretch; gap: 2px; padding: 4px 6px 0;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+}
+.strip[hidden] { display: none; }
+#main.has-strip #terms { top: 34px; }
+#main.has-strip .history { top: 34px; }
+#main.has-strip .banner:not(.toast), #main.has-strip .histpill { top: 44px; }
+.chip {
+  display: flex; align-items: center; gap: 7px; flex: 0 1 auto; min-width: 72px; max-width: 220px;
+  padding: 0 6px 0 10px; border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0;
+  color: var(--muted); cursor: pointer; user-select: none; font-size: 13px;
+}
+.chip:hover { color: var(--text); background: var(--panel-2); }
+/* The active tab sits on the terminal: same background, covering the strip's bottom line. */
+.chip.active { background: var(--bg); color: var(--text); border-color: var(--line); margin-bottom: -1px; }
+.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+.chip.dead .dot { background: var(--muted); }
+.chip.activity:not(.active) .dot { background: var(--warn); box-shadow: 0 0 0 3px rgba(224,176,77,.18); }
+.chip .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip input.rename {
+  width: 130px; min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--accent);
+  border-radius: 4px; padding: 1px 5px; font: inherit; user-select: text;
+}
+.chip-close {
+  flex: none; width: 18px; height: 18px; border: 0; border-radius: 4px; padding: 0;
+  background: transparent; color: var(--muted); font-size: 11px; line-height: 1; visibility: hidden;
+}
+.chip:hover .chip-close, .chip.active .chip-close, .chip:focus-within .chip-close { visibility: visible; }
+.chip-close:hover { background: var(--line); color: var(--err); }
+.chip:has(input.rename) .chip-close { display: none; }
+.chip.dragging { opacity: .4; }
+.chip.drop-before { box-shadow: inset 2px 0 0 var(--accent); }
+.chip.drop-after { box-shadow: inset -2px 0 0 var(--accent); }
+.chip-add {
+  flex: none; align-self: center; width: 26px; height: 24px; margin: 0 2px 4px; border: 0; border-radius: 6px;
+  padding: 0; background: transparent; color: var(--muted); font-size: 17px; line-height: 1;
+}
+.chip-add:hover, .chip-add:focus-visible { background: var(--panel-2); color: var(--accent); outline: none; }
+.chip-add:disabled { opacity: .4; cursor: not-allowed; }
+/* Number of tabs of a session, in the sidebar. */
+.tab .count {
+  flex: none; font-size: 11px; line-height: 16px; color: var(--muted); padding: 0 6px;
+  border: 1px solid var(--line); border-radius: 999px;
+}
+
 /* ---------- long-term history ---------- */
 .histpill {
   position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 15;

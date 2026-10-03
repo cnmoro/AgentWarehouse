@@ -36,12 +36,15 @@ Open `https://<machine>.<tailnet>.ts.net`. HTTPS certificates must be enabled fo
 
 ## Using it
 
+The sidebar lists sessions. Each session has one or more tabs, shown along the top of the terminal; each tab is its own shell.
+
 | Action | How |
 | --- | --- |
-| New terminal | `+` in the sidebar. It opens in the current tab's folder. |
-| Rename | Double-click the name, the ✎ button, or F2. Enter saves, Esc cancels. |
-| Reorder | Drag tabs in the sidebar. |
-| Close | ✕ or Delete. This kills the shell and anything running in it. |
+| New session | `+` in the sidebar. It opens in the current tab's folder. |
+| New tab | `+` at the end of the tabs. It opens in the folder of the session's first tab. |
+| Rename | Double-click a session or tab name, the ✎ button, or F2. Enter saves, Esc cancels. |
+| Reorder | Drag sessions in the sidebar, or tabs along the top. |
+| Close | ✕ or Delete; middle-click also closes a tab. Closing a session closes all its tabs. This kills the shells and anything running in them. |
 | Move between tabs | Click. From the keyboard: **Ctrl+Shift+E** jumps to the tab list, then arrow keys and Enter; Esc goes back to the terminal. |
 | Copy | Select with the mouse, then **Ctrl+C**. With nothing selected, Ctrl+C sends an interrupt as usual. **Ctrl+Shift+C** always copies. |
 | Paste | **Ctrl+V** or **Ctrl+Shift+V**. Bracketed paste is used when the program supports it. |
@@ -59,7 +62,7 @@ On a phone, a row of keys under the terminal gives Esc, Tab, Ctrl (tap it, then 
 
 The browser asks before you leave the page, so a stray Ctrl+W (delete word in bash) doesn't close it. The shells keep running either way.
 
-A yellow dot on a tab means it printed output since you last looked. A grey dot means the shell exited. Press Enter in that tab to start a new one.
+A yellow dot on a tab means the text on its screen changed since you last looked; on a session, that one of its tabs did. Output that leaves the screen as it was (a program redrawing itself, a status message that disappears again) does not count. A grey dot means the shell exited. Press Enter in that tab to start a new one.
 
 When two browsers show the same terminal, the one you used last sets its size, and the other follows it.
 

@@ -341,7 +341,7 @@ function attach(client, tab) {
 }
 
 function syncClient(client) {
-  send(client, { t: 'list', tabs: terminals.list() });
+  send(client, { t: 'list', tabs: terminals.list(), groups: terminals.listGroups() });
   for (const [id, handle] of client.subs) {
     if (!terminals.get(id)) {
       handle.close();
@@ -416,8 +416,11 @@ function handleMessage(client, raw) {
       if (tab && num(msg.cols) > 0 && num(msg.rows) > 0) tab.resize(msg.cols, msg.rows);
       break;
     case 'create': {
+      // With `group`: a new tab in that session. Otherwise a new session,
+      // in the folder of the terminal `from`.
       const from = typeof msg.from === 'string' ? terminals.get(msg.from) : null;
-      const created = terminals.create(str(msg.name), from ? from.currentCwd() : undefined);
+      const group = typeof msg.group === 'string' ? msg.group : undefined;
+      const created = terminals.create(str(msg.name), from ? from.currentCwd() : undefined, { group });
       if (created) send(client, { t: 'created', id: created.id });
       else send(client, { t: 'error', msg: 'Limit of 50 terminals reached. Close one first.' });
       break;
@@ -430,6 +433,15 @@ function handleMessage(client, raw) {
       break;
     case 'reorder':
       if (Array.isArray(msg.ids)) terminals.reorder(msg.ids.filter((x) => typeof x === 'string'));
+      break;
+    case 'renameGroup':
+      if (typeof msg.id === 'string' && str(msg.name)) terminals.renameGroup(msg.id, msg.name);
+      break;
+    case 'closeGroup':
+      if (typeof msg.id === 'string') terminals.closeGroup(msg.id);
+      break;
+    case 'reorderGroups':
+      if (Array.isArray(msg.ids)) terminals.reorderGroups(msg.ids.filter((x) => typeof x === 'string'));
       break;
     case 'ping':
       send(client, { t: 'pong' });

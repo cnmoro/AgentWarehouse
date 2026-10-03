@@ -26,11 +26,14 @@ function storage(key, value) {
 const state = {
   ws: null,
   connected: false,
-  tabs: [],             // [{ id, name, alive }] in sidebar order
+  tabs: [],             // [{ id, name, alive, group }] terminals, in tab order
+  groups: null,         // [{ id, name }] sessions in sidebar order; null: a server without sessions
+  activity: new Set(),  // terminals whose screen changed since they were last on screen
   views: new Map(),     // id -> view (see createView)
   active: storage('wt.active'),
   pendingActivate: null,
-  closedIndex: null,
+  closedAt: null,         // position of a closed tab in its session, to open its neighbour
+  closedSessionAt: null,  // position of a closed session in the sidebar
   renaming: null,
   retry: 0,
   retryTimer: null,
@@ -148,7 +151,7 @@ function connect() {
         $('#who').title = msg.email;
         if (msg.scrollback > 0) state.scrollback = msg.scrollback;
         break;
-      case 'list': onList(msg.tabs); break;
+      case 'list': onList(msg.tabs, msg.groups); break;
       case 'snap': onSnapshot(msg); break;
       case 'out': onOutput(msg.id, msg.d); break;
       case 'size': onSize(msg); break;
@@ -523,9 +526,9 @@ function onSize({ id, cols, rows }) {
 }
 
 function markActivity(id) {
-  if (id === state.active) return;
-  const li = tabsEl.querySelector(`[data-id="${CSS.escape(id)}"]`);
-  if (li) li.classList.add('activity');
+  if (id === state.active || state.activity.has(id)) return;
+  state.activity.add(id);
+  renderTabs();
 }
 
 // ---- Activity (the yellow dot) means "the text on screen changed since you
@@ -622,14 +625,13 @@ function activate(id) {
   hideHistPill();
   state.active = id;
   storage('wt.active', id);
+  state.activity.delete(id);
+  rememberLastTab(id);
 
   let v = state.views.get(id);
   if (!v) v = createView(id);
   if (!v.attached && send({ t: 'attach', id })) v.attached = true;
   showView(v);
-
-  const tab = state.tabs.find((t) => t.id === id);
-  document.title = tab ? `${tab.name} · Web Terminal` : 'Web Terminal';
   renderTabs();
   requestAnimationFrame(() => {
     fitActive();
@@ -638,16 +640,24 @@ function activate(id) {
   if (mobile.matches) setSidebar(false);
 }
 
-function onList(tabs) {
-  const oldIndex = state.tabs.findIndex((t) => t.id === state.active);
+function onList(tabs, groups) {
+  const oldSession = sessionOf(state.active);
+  const oldSessionIndex = sessions().findIndex((g) => g.id === oldSession);
+  const oldTabIndex = tabsOf(oldSession).findIndex((t) => t.id === state.active);
   state.tabs = tabs;
+  state.groups = Array.isArray(groups) ? groups : null;
   const ids = new Set(tabs.map((t) => t.id));
-  // The tab being renamed was closed elsewhere: drop the input.
-  if (state.renaming && !ids.has(state.renaming)) state.renaming = null;
+  // What is being renamed was closed elsewhere: drop the input.
+  if (state.renaming && !ids.has(state.renaming) && !sessions().some((g) => g.id === state.renaming)) state.renaming = null;
   for (const id of [...state.views.keys()]) if (!ids.has(id)) disposeView(id);
+  for (const id of [...state.activity]) if (!ids.has(id)) state.activity.delete(id);
   if ([...seen.keys()].some((id) => !ids.has(id))) {
     for (const id of [...seen.keys()]) if (!ids.has(id)) seen.delete(id);
     storage('wt.seen', JSON.stringify(Object.fromEntries(seen)));
+  }
+  if ([...lastTab.values()].some((id) => !ids.has(id))) {
+    for (const [g, id] of [...lastTab]) if (!ids.has(id)) lastTab.delete(g);
+    storage('wt.lastTab', JSON.stringify(Object.fromEntries(lastTab)));
   }
   $('#empty').hidden = tabs.length > 0;
 
@@ -656,19 +666,25 @@ function onList(tabs) {
     state.pendingActivate = null;
     activate(id);
   } else if (!ids.has(state.active)) {
-    // The active tab went away: move to its neighbour, not back to the top.
-    const idx = state.closedIndex ?? Math.max(0, oldIndex);
-    state.closedIndex = null;
-    if (tabs.length) activate(tabs[Math.min(idx, tabs.length - 1)].id);
-    else { state.active = null; document.title = 'Web Terminal'; renderTabs(); }
+    // The tab on screen went away: its neighbour in the same session, or, if
+    // the session is gone, the neighbouring session (not back to the top).
+    const siblings = oldSession ? tabsOf(oldSession) : [];
+    const all = sessions();
+    if (siblings.length) {
+      const i = state.closedAt ?? Math.max(0, oldTabIndex);
+      activate(siblings[Math.min(i, siblings.length - 1)].id);
+    } else if (all.length) {
+      const i = state.closedSessionAt ?? Math.max(0, oldSessionIndex);
+      activateSession(all[Math.min(i, all.length - 1)].id);
+    } else {
+      state.active = null;
+      renderTabs();
+    }
+    state.closedAt = state.closedSessionAt = null;
   } else {
     const v = state.views.get(state.active);
     if (!v || !v.attached) activate(state.active);
-    else {
-      renderTabs();
-      const tab = tabs.find((t) => t.id === state.active);
-      if (tab) document.title = `${tab.name} · Web Terminal`;
-    }
+    else renderTabs();
   }
   // Tabs never viewed in this browser: take their current screen as the
   // starting point, so the yellow dot can tell a real change from a redraw.
@@ -757,25 +773,157 @@ function handleKey(term, e) {
   return true;
 }
 
-// ------------------------------------------------------------------ sidebar
+// ------------------------------------------------------------------ sessions and tabs
+
+// The sidebar lists sessions; the strip above the terminal lists the tabs
+// (terminals) of the session on screen. A server without sessions sends no
+// groups: then each terminal is a session of its own and the strip is hidden.
+
+const stripEl = $('#strip');
+const lastTab = new Map(Object.entries(JSON.parse(storage('wt.lastTab') || '{}'))); // session -> tab last on screen
+
+function hasSessions() {
+  return Array.isArray(state.groups);
+}
+
+function sessionOf(id) {
+  const t = state.tabs.find((x) => x.id === id);
+  return t ? (hasSessions() ? t.group : t.id) : null;
+}
+
+function sessions() {
+  return hasSessions() ? state.groups : state.tabs.map((t) => ({ id: t.id, name: t.name }));
+}
+
+function tabsOf(gid) {
+  return state.tabs.filter((t) => (hasSessions() ? t.group : t.id) === gid);
+}
+
+function rememberLastTab(id) {
+  const gid = sessionOf(id);
+  if (!gid || lastTab.get(gid) === id) return;
+  lastTab.set(gid, id);
+  storage('wt.lastTab', JSON.stringify(Object.fromEntries(lastTab)));
+}
+
+// Back to the tab that was on screen when the session was left.
+function activateSession(gid) {
+  const members = tabsOf(gid);
+  if (!members.length) return;
+  const last = lastTab.get(gid);
+  activate(members.some((t) => t.id === last) ? last : members[0].id);
+}
+
+function updateTitle() {
+  const t = state.tabs.find((x) => x.id === state.active);
+  if (!t) { document.title = 'Web Terminal'; return; }
+  const g = sessions().find((x) => x.id === sessionOf(t.id));
+  const name = !hasSessions() || !g ? t.name : tabsOf(g.id).length > 1 ? `${g.name} · ${t.name}` : g.name;
+  document.title = `${name} · Web Terminal`;
+}
 
 function renderTabs() {
   if (state.renaming) return; // don't clobber an input the user is typing in
-  const activity = new Set([...tabsEl.querySelectorAll('.activity')].map((li) => li.dataset.id));
+  renderSidebar();
+  renderStrip();
+  updateTitle();
+  const full = state.tabs.length >= MAX_TABS;
+  const limit = `Limit of ${MAX_TABS} terminals reached`;
+  for (const b of $$('.new-tab')) {
+    b.disabled = full;
+    b.title = full ? limit : hasSessions() ? 'New session (opens in the current folder)' : 'New terminal (opens in the current tab\'s folder)';
+  }
+  for (const b of $$('.chip-add')) {
+    b.disabled = full;
+    b.title = full ? limit : 'New tab (opens in the folder of this session\'s first tab)';
+  }
+}
+
+function actionButton(text, title, label, onclick, className) {
+  const b = document.createElement('button');
+  b.textContent = text;
+  b.title = title;
+  b.tabIndex = -1;
+  b.setAttribute('aria-label', label);
+  if (className) b.className = className;
+  b.onclick = (e) => { e.stopPropagation(); onclick(); };
+  return b;
+}
+
+function renderSidebar() {
   const hadFocus = tabsEl.contains(document.activeElement) ? document.activeElement.closest('.tab')?.dataset.id : null;
+  const current = sessionOf(state.active);
   tabsEl.textContent = '';
-  for (const t of state.tabs) {
-    const active = t.id === state.active;
+  for (const g of sessions()) {
+    const members = tabsOf(g.id);
+    const active = g.id === current;
     const li = document.createElement('li');
     li.className = 'tab';
-    li.dataset.id = t.id;
+    li.dataset.id = g.id;
     li.draggable = true;
     li.tabIndex = active ? 0 : -1;
     li.setAttribute('role', 'tab');
     li.setAttribute('aria-selected', String(active));
     if (active) li.classList.add('active');
-    else if (activity.has(t.id)) li.classList.add('activity');
-    if (!t.alive) li.classList.add('dead');
+    if (members.some((t) => state.activity.has(t.id))) li.classList.add('activity');
+    if (members.length && members.every((t) => !t.alive)) li.classList.add('dead');
+
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    dot.setAttribute('aria-hidden', 'true');
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = g.name;
+    name.title = `${g.name}${members.length > 1 ? ` · ${members.length} tabs` : ''}\nDouble-click to rename`;
+    li.append(dot, name);
+    if (members.length > 1) {
+      const count = document.createElement('span');
+      count.className = 'count';
+      count.textContent = String(members.length);
+      count.setAttribute('aria-label', `${members.length} tabs`);
+      li.append(count);
+    }
+
+    const actions = document.createElement('span');
+    actions.className = 'actions';
+    actions.append(
+      actionButton('⏱', 'Full history (Ctrl+Shift+H)', `History of ${g.name}`, () => {
+        if (sessionOf(state.active) !== g.id) activateSession(g.id);
+        histOpen();
+      }),
+      actionButton('✎', 'Rename (F2)', `Rename ${g.name}`, () => renameSession(g.id)),
+      actionButton('✕', hasSessions() ? 'Close session (Delete)' : 'Close terminal (Delete)', `Close ${g.name}`,
+        () => closeSession(g.id), 'close'),
+    );
+    li.append(actions);
+    li.onclick = () => activateSession(g.id);
+    name.ondblclick = (e) => { e.stopPropagation(); renameSession(g.id); };
+    addDrag(li);
+    tabsEl.appendChild(li);
+    if (hadFocus === g.id) li.focus();
+  }
+  tabsEl.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest' });
+}
+
+function renderStrip() {
+  const gid = hasSessions() ? sessionOf(state.active) : null;
+  stripEl.hidden = !gid;
+  $('#main').classList.toggle('has-strip', !!gid);
+  if (!gid) { stripEl.textContent = ''; return; }
+  const hadFocus = stripEl.contains(document.activeElement) ? document.activeElement.closest('.chip')?.dataset.id : null;
+  stripEl.textContent = '';
+  for (const t of tabsOf(gid)) {
+    const active = t.id === state.active;
+    const chip = document.createElement('div');
+    chip.className = 'chip';
+    chip.dataset.id = t.id;
+    chip.draggable = true;
+    chip.tabIndex = active ? 0 : -1;
+    chip.setAttribute('role', 'tab');
+    chip.setAttribute('aria-selected', String(active));
+    if (active) chip.classList.add('active');
+    else if (state.activity.has(t.id)) chip.classList.add('activity');
+    if (!t.alive) chip.classList.add('dead');
 
     const dot = document.createElement('span');
     dot.className = 'dot';
@@ -783,64 +931,59 @@ function renderTabs() {
     const name = document.createElement('span');
     name.className = 'name';
     name.textContent = t.name;
-    name.title = `${t.name}\nDouble-click to rename`;
-
-    const actions = document.createElement('span');
-    actions.className = 'actions';
-    const ren = document.createElement('button');
-    ren.textContent = '✎';
-    ren.title = 'Rename (F2)';
-    ren.tabIndex = -1;
-    ren.setAttribute('aria-label', `Rename ${t.name}`);
-    ren.onclick = (e) => { e.stopPropagation(); startRename(t.id); };
-    const close = document.createElement('button');
-    close.className = 'close';
-    close.textContent = '✕';
-    close.title = 'Close terminal (Delete)';
-    close.tabIndex = -1;
-    close.setAttribute('aria-label', `Close ${t.name}`);
-    close.onclick = (e) => { e.stopPropagation(); closeTab(t.id); };
-    const histBtn = document.createElement('button');
-    histBtn.textContent = '⏱';
-    histBtn.title = 'Full history (Ctrl+Shift+H)';
-    histBtn.tabIndex = -1;
-    histBtn.setAttribute('aria-label', `History of ${t.name}`);
-    histBtn.onclick = (e) => {
-      e.stopPropagation();
-      if (t.id !== state.active) activate(t.id);
-      histOpen();
-    };
-    actions.append(histBtn, ren, close);
-
-    li.append(dot, name, actions);
-    li.onclick = () => activate(t.id);
-    name.ondblclick = (e) => { e.stopPropagation(); startRename(t.id); };
-    addDrag(li);
-    tabsEl.appendChild(li);
-    if (hadFocus === t.id) li.focus();
+    name.title = `${t.name}\nDouble-click to rename · middle-click to close`;
+    const close = actionButton('✕', 'Close tab (Delete)', `Close tab ${t.name}`, () => closeTab(t.id), 'chip-close');
+    chip.append(dot, name, close);
+    chip.onclick = () => activate(t.id);
+    // Middle-click closes, as in browsers (and must not start autoscroll).
+    chip.onmousedown = (e) => { if (e.button === 1) e.preventDefault(); };
+    chip.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); closeTab(t.id); } };
+    name.ondblclick = (e) => { e.stopPropagation(); renameTab(t.id); };
+    addChipDrag(chip);
+    stripEl.appendChild(chip);
+    if (hadFocus === t.id) chip.focus();
   }
-  tabsEl.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest' });
-  const full = state.tabs.length >= MAX_TABS;
-  for (const b of $$('.new-tab')) {
-    b.disabled = full;
-    b.title = full ? `Limit of ${MAX_TABS} terminals reached` : 'New terminal (opens in the current tab\'s folder)';
-  }
+  const add = document.createElement('button');
+  add.className = 'chip-add';
+  add.textContent = '+';
+  add.setAttribute('aria-label', 'New tab');
+  add.onclick = () => send({ t: 'create', group: gid });
+  stripEl.appendChild(add);
+  stripEl.querySelector('.chip.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
 function closeTab(id, returnFocus) {
   const t = state.tabs.find((x) => x.id === id);
   if (!t) return;
-  if (t.alive && !confirm(`Close "${t.name}"? Its shell and any running programs will be killed.`)) {
+  const g = hasSessions() && state.groups.find((x) => x.id === t.group);
+  const what = g && tabsOf(g.id).length > 1 ? `tab "${t.name}" of "${g.name}"` : `"${g ? g.name : t.name}"`;
+  if (t.alive && !confirm(`Close ${what}? Its shell and any running programs will be killed.`)) {
     if (returnFocus) returnFocus.focus();
     else focusActive();
     return;
   }
-  if (id === state.active) state.closedIndex = state.tabs.indexOf(t);
+  if (id === state.active) state.closedAt = tabsOf(sessionOf(id)).indexOf(t);
   send({ t: 'close', id });
   focusActive();
 }
 
-// Keyboard use of the tab list: arrows move, Enter opens, F2 renames, Delete closes.
+function closeSession(gid, returnFocus) {
+  if (!hasSessions()) { closeTab(gid, returnFocus); return; }
+  const g = state.groups.find((x) => x.id === gid);
+  if (!g) return;
+  const members = tabsOf(gid);
+  const what = members.length > 1 ? `Its ${members.length} tabs` : 'Its shell';
+  if (members.some((t) => t.alive) && !confirm(`Close "${g.name}"? ${what} and any running programs will be killed.`)) {
+    if (returnFocus) returnFocus.focus();
+    else focusActive();
+    return;
+  }
+  if (gid === sessionOf(state.active)) state.closedSessionAt = state.groups.indexOf(g);
+  send({ t: 'closeGroup', id: gid });
+  focusActive();
+}
+
+// Keyboard use of the session list: arrows move, Enter opens, F2 renames, Delete closes.
 tabsEl.addEventListener('keydown', (e) => {
   const li = e.target.closest?.('.tab');
   if (!li || e.target.tagName === 'INPUT') return;
@@ -857,11 +1000,11 @@ tabsEl.addEventListener('keydown', (e) => {
     target.tabIndex = 0;
     target.focus();
   } else if (e.key === 'Enter' || e.key === ' ') {
-    activate(li.dataset.id);
+    activateSession(li.dataset.id);
   } else if (e.key === 'F2') {
-    startRename(li.dataset.id);
+    renameSession(li.dataset.id);
   } else if (e.key === 'Delete') {
-    closeTab(li.dataset.id, li);
+    closeSession(li.dataset.id, li);
   } else if (e.key === 'Escape') {
     focusActive();
   } else {
@@ -870,39 +1013,66 @@ tabsEl.addEventListener('keydown', (e) => {
   e.preventDefault();
 });
 
-function startRename(id) {
-  const li = tabsEl.querySelector(`[data-id="${CSS.escape(id)}"]`);
-  const tab = state.tabs.find((t) => t.id === id);
-  if (!li || !tab || state.renaming) return;
-  state.renaming = id;
-  li.draggable = false; // otherwise mouse selection inside the input starts a drag
-  const nameEl = li.querySelector('.name');
+// The same for the tabs of the strip, along the row.
+stripEl.addEventListener('keydown', (e) => {
+  const chip = e.target.closest?.('.chip');
+  if (!chip || e.target.tagName === 'INPUT') return;
+  const items = [...stripEl.querySelectorAll('.chip')];
+  const i = items.indexOf(chip);
+  const target = {
+    ArrowRight: items[(i + 1) % items.length],
+    ArrowLeft: items[(i - 1 + items.length) % items.length],
+    Home: items[0],
+    End: items[items.length - 1],
+  }[e.key];
+  if (target) {
+    items.forEach((x) => { x.tabIndex = -1; });
+    target.tabIndex = 0;
+    target.focus();
+  } else if (e.key === 'Enter' || e.key === ' ') {
+    activate(chip.dataset.id);
+  } else if (e.key === 'F2') {
+    renameTab(chip.dataset.id);
+  } else if (e.key === 'Delete') {
+    closeTab(chip.dataset.id, chip);
+  } else if (e.key === 'Escape') {
+    focusActive();
+  } else {
+    return;
+  }
+  e.preventDefault();
+});
+
+// Edit a name in place: Enter or leaving the field saves, Escape cancels.
+function inlineRename(el, current, save) {
+  const nameEl = el && el.querySelector('.name');
+  if (!nameEl || state.renaming) return;
+  state.renaming = el.dataset.id;
+  el.draggable = false; // otherwise mouse selection inside the input starts a drag
   const input = document.createElement('input');
   input.className = 'rename';
-  input.value = tab.name;
+  input.value = current;
   input.maxLength = 60;
-  input.setAttribute('aria-label', 'Terminal name');
+  input.setAttribute('aria-label', 'Name');
   nameEl.replaceWith(input);
   input.focus();
   input.select();
 
   let done = false;
-  const finish = (save) => {
+  const finish = (keep) => {
     if (done) return;
     done = true;
     const name = input.value.trim();
-    if (save && name && name !== tab.name) {
-      tab.name = name;
-      send({ t: 'rename', id, name });
+    if (keep && name && name !== current) {
+      save(name);
+      nameEl.textContent = name;
     }
     // Swap the input back in place. Rebuilding the list here would eat a click
     // on another tab that caused this blur.
-    nameEl.textContent = tab.name;
-    nameEl.title = `${tab.name}\nDouble-click to rename`;
     input.replaceWith(nameEl);
-    li.draggable = true;
+    el.draggable = true;
     state.renaming = null;
-    if (id === state.active) document.title = `${tab.name} · Web Terminal`;
+    updateTitle();
     // Catch up on list changes skipped while the input was open. Deferred so a
     // click on another tab (which caused the blur) still lands.
     setTimeout(renderTabs, 150);
@@ -916,23 +1086,48 @@ function startRename(id) {
   input.onblur = () => finish(true);
   input.onclick = (e) => e.stopPropagation();
   input.ondblclick = (e) => e.stopPropagation();
+  input.onauxclick = (e) => e.stopPropagation();
 }
 
+function renameSession(gid) {
+  const li = tabsEl.querySelector(`.tab[data-id="${CSS.escape(gid)}"]`);
+  if (!hasSessions()) {
+    const t = state.tabs.find((x) => x.id === gid);
+    if (t) inlineRename(li, t.name, (name) => { t.name = name; send({ t: 'rename', id: gid, name }); });
+    return;
+  }
+  const g = state.groups.find((x) => x.id === gid);
+  if (g) inlineRename(li, g.name, (name) => { g.name = name; send({ t: 'renameGroup', id: gid, name }); });
+}
+
+function renameTab(id) {
+  const chip = stripEl.querySelector(`.chip[data-id="${CSS.escape(id)}"]`);
+  const t = state.tabs.find((x) => x.id === id);
+  if (t) inlineRename(chip, t.name, (name) => { t.name = name; send({ t: 'rename', id, name }); });
+}
+
+// ---- drag to reorder: sessions up and down the sidebar, tabs along the strip
+
 let dragId = null;
-function clearDropMarks() {
-  tabsEl.querySelectorAll('.drop-before, .drop-after').forEach((x) => x.classList.remove('drop-before', 'drop-after'));
+function clearDropMarks(root) {
+  root.querySelectorAll('.drop-before, .drop-after').forEach((x) => x.classList.remove('drop-before', 'drop-after'));
 }
-function dropPosition(li, e) {
-  const r = li.getBoundingClientRect();
-  return e.clientY < r.top + r.height / 2 ? 'before' : 'after';
+function dropPosition(el, e, horizontal) {
+  const r = el.getBoundingClientRect();
+  return (horizontal ? e.clientX < r.left + r.width / 2 : e.clientY < r.top + r.height / 2) ? 'before' : 'after';
 }
-function moveTab(targetId, where) {
-  const ids = state.tabs.map((t) => t.id).filter((id) => id !== dragId);
-  let idx = targetId ? ids.indexOf(targetId) + (where === 'after' ? 1 : 0) : ids.length;
+function moveSession(targetId, where) {
+  const ids = sessions().map((g) => g.id).filter((id) => id !== dragId);
+  const idx = targetId ? ids.indexOf(targetId) + (where === 'after' ? 1 : 0) : ids.length;
   ids.splice(idx, 0, dragId);
-  state.tabs.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+  if (hasSessions()) {
+    state.groups.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+    send({ t: 'reorderGroups', ids });
+  } else {
+    state.tabs.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+    send({ t: 'reorder', ids });
+  }
   renderTabs();
-  send({ t: 'reorder', ids });
 }
 function addDrag(li) {
   li.addEventListener('dragstart', (e) => {
@@ -944,27 +1139,72 @@ function addDrag(li) {
   li.addEventListener('dragend', () => {
     dragId = null;
     li.classList.remove('dragging');
-    clearDropMarks();
+    clearDropMarks(tabsEl);
   });
   li.addEventListener('dragover', (e) => {
     if (!dragId || dragId === li.dataset.id) return;
     e.preventDefault();
     e.stopPropagation();
-    clearDropMarks();
+    clearDropMarks(tabsEl);
     li.classList.add(dropPosition(li, e) === 'before' ? 'drop-before' : 'drop-after');
   });
   li.addEventListener('drop', (e) => {
     e.preventDefault();
     e.stopPropagation();
     if (!dragId || dragId === li.dataset.id) return;
-    moveTab(li.dataset.id, dropPosition(li, e));
+    moveSession(li.dataset.id, dropPosition(li, e));
   });
 }
-// Dropping on the empty space below the last tab moves it to the end.
+// Dropping on the empty space below the last session moves it to the end.
 tabsEl.addEventListener('dragover', (e) => { if (dragId) e.preventDefault(); });
 tabsEl.addEventListener('drop', (e) => {
   e.preventDefault();
-  if (dragId) moveTab(null, 'end');
+  if (dragId) moveSession(null, 'end');
+});
+
+let chipDragId = null;
+// The session's tabs take the places they held among all terminals (as the
+// server does), so the order of other sessions' tabs is untouched.
+function moveChip(targetId, where) {
+  const ids = tabsOf(sessionOf(chipDragId)).map((t) => t.id).filter((id) => id !== chipDragId);
+  const idx = targetId ? ids.indexOf(targetId) + (where === 'after' ? 1 : 0) : ids.length;
+  ids.splice(idx, 0, chipDragId);
+  const byId = new Map(state.tabs.map((t) => [t.id, t]));
+  const places = state.tabs.map((t, i) => (ids.includes(t.id) ? i : -1)).filter((i) => i >= 0);
+  ids.forEach((id, k) => { state.tabs[places[k]] = byId.get(id); });
+  send({ t: 'reorder', ids });
+  renderTabs();
+}
+function addChipDrag(chip) {
+  chip.addEventListener('dragstart', (e) => {
+    chipDragId = chip.dataset.id;
+    chip.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', chip.dataset.id);
+  });
+  chip.addEventListener('dragend', () => {
+    chipDragId = null;
+    chip.classList.remove('dragging');
+    clearDropMarks(stripEl);
+  });
+  chip.addEventListener('dragover', (e) => {
+    if (!chipDragId || chipDragId === chip.dataset.id) return;
+    e.preventDefault();
+    e.stopPropagation();
+    clearDropMarks(stripEl);
+    chip.classList.add(dropPosition(chip, e, true) === 'before' ? 'drop-before' : 'drop-after');
+  });
+  chip.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!chipDragId || chipDragId === chip.dataset.id) return;
+    moveChip(chip.dataset.id, dropPosition(chip, e, true));
+  });
+}
+stripEl.addEventListener('dragover', (e) => { if (chipDragId) e.preventDefault(); });
+stripEl.addEventListener('drop', (e) => {
+  e.preventDefault();
+  if (chipDragId) moveChip(null, 'end');
 });
 
 // ------------------------------------------------------------------ long-term history
@@ -1461,8 +1701,8 @@ document.addEventListener('keydown', (e) => {
 
 for (const btn of $$('.new-tab')) {
   btn.onclick = () => {
-    const names = new Set(state.tabs.map((t) => t.name));
-    let n = state.tabs.length + 1;
+    const names = new Set(sessions().map((g) => g.name));
+    let n = sessions().length + 1;
     while (names.has(`Terminal ${n}`)) n++;
     send({ t: 'create', name: `Terminal ${n}`, from: state.active || undefined });
   };
