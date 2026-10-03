@@ -308,6 +308,9 @@ function createView(id) {
     // Programs that take the mouse (claude, codex, vim, tmux) get the drags;
     // Option+drag (Shift+drag elsewhere) still selects terminal text.
     macOptionClickForcesSelection: true,
+    // The scrollbar's width (xterm sizes it from the overview ruler); the
+    // other scrollbars in app.css match it.
+    overviewRuler: { width: 8 },
     rightClickSelectsWord: false,
     disableStdin: !state.connected,
   });
