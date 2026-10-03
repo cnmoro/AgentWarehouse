@@ -129,6 +129,7 @@ function connect() {
       }
       // The server forgot what this page was attached to. Hidden tabs re-attach
       // when next shown; the visible one re-attaches as soon as the list arrives.
+      bgAttach.clear();
       for (const [id, v] of state.views) {
         if (id === state.active) v.attached = false;
         else disposeView(id);
@@ -151,7 +152,7 @@ function connect() {
       case 'snap': onSnapshot(msg); break;
       case 'out': onOutput(msg.id, msg.d); break;
       case 'size': onSize(msg); break;
-      case 'act': markActivity(msg.id); break;
+      case 'act': onAct(msg.id); break;
       case 'created': activate(msg.id); break;
       case 'error': toast(msg.msg); break;
       case 'pong': break;
@@ -353,7 +354,7 @@ function createView(id) {
 
   addTouchScroll(el, term);
 
-  const view = { id, term, fit, el, webgl: null, attached: false, seq: 0, ackPending: 0, ackTimer: null };
+  const view = { id, term, fit, el, webgl: null, attached: false, seq: 0, ackPending: 0, ackTimer: null, actTimer: null, actSince: 0 };
   state.views.set(id, view);
   return view;
 }
@@ -388,6 +389,7 @@ function disposeView(id) {
   const v = state.views.get(id);
   if (!v) return;
   clearTimeout(v.ackTimer);
+  clearTimeout(v.actTimer);
   // A blinking cursor's timer keeps a disposed terminal alive; stop it first.
   v.term.options.cursorBlink = false;
   if (v.webgl) { try { v.webgl.dispose(); } catch { /* already gone */ } }
@@ -493,6 +495,8 @@ function onSnapshot({ id, d, seq, cols, rows }) {
     const slice = d.slice(i, i + SNAPSHOT_SLICE);
     v.term.write(slice, () => ack(v, slice.length));
   }
+  bgAttach.delete(id);
+  if (id !== state.active) noteOutput(v);
   if (id === state.active) {
     showView(v);
     v.term.write('', () => {
@@ -508,7 +512,7 @@ function onOutput(id, d) {
   const v = state.views.get(id);
   if (!v) return;
   v.term.write(d, () => ack(v, d.length));
-  if (id !== state.active) markActivity(id);
+  if (id !== state.active) noteOutput(v);
 }
 
 // Another browser resized the terminal. Follow it so wrapping matches what the
@@ -524,6 +528,77 @@ function markActivity(id) {
   if (li) li.classList.add('activity');
 }
 
+// ---- Activity (the yellow dot) means "the text on screen changed since you
+// last looked", not "some bytes arrived". Idle programs print things that
+// leave the screen as it was: claude flashes "Checking for updates" every
+// 30 minutes, TUIs redraw after a resize or re-send their modes on focus.
+// So: remember a fingerprint of each tab's screen when you leave it; when a
+// background tab prints, wait for the output to settle, then compare.
+const ACT_SETTLE = 1000;    // judge once the tab has been quiet this long...
+const ACT_MAX_WAIT = 5000;  // ...or after this long, if it never goes quiet
+const seen = new Map(Object.entries(JSON.parse(storage('wt.seen') || '{}')));
+const bgAttach = new Set(); // hidden tabs being fetched only to compare their screen
+
+// Text of the bottom screenful, without spaces: line wrapping changes after a
+// resize, the words don't. FNV-1a, so localStorage keeps a short number.
+function screenHash(term) {
+  const b = term.buffer.active;
+  let h = 0x811c9dc5;
+  for (let y = b.baseY; y < b.baseY + term.rows; y++) {
+    const line = b.getLine(y);
+    if (!line) continue;
+    const text = line.translateToString(true);
+    for (let i = 0; i < text.length; i++) {
+      const c = text.charCodeAt(i);
+      if (c === 32 || c === 9 || c === 160) continue;
+      h = Math.imul(h ^ c, 0x01000193) >>> 0;
+    }
+  }
+  return h.toString(36);
+}
+
+function rememberSeen(id) {
+  const v = state.views.get(id);
+  if (!v || !v.attached) return;
+  seen.set(id, screenHash(v.term));
+  storage('wt.seen', JSON.stringify(Object.fromEntries(seen)));
+}
+
+// A background tab printed: compare once it settles.
+function noteOutput(v) {
+  if (v.id === state.active) return;
+  const now = Date.now();
+  if (!v.actSince) v.actSince = now;
+  clearTimeout(v.actTimer);
+  const wait = Math.max(0, Math.min(ACT_SETTLE, v.actSince + ACT_MAX_WAIT - now));
+  v.actTimer = setTimeout(() => {
+    v.actSince = 0;
+    if (v.id === state.active || state.views.get(v.id) !== v) return;
+    // Let xterm finish parsing what has arrived, then look.
+    v.term.write('', () => {
+      if (v.id === state.active || state.views.get(v.id) !== v) return;
+      const before = seen.get(v.id);
+      if (before === undefined || before !== screenHash(v.term)) markActivity(v.id);
+    });
+  }, wait);
+}
+
+// The server reports activity in a tab this page isn't attached to. Without
+// a fingerprint from an earlier visit there is nothing to compare: mark it.
+// Otherwise fetch the tab quietly; its snapshot and further output are judged
+// like any background tab's.
+function onAct(id) {
+  if (id === state.active) return;
+  const v = state.views.get(id);
+  if (v && v.attached) return; // its output reaches us directly
+  if (!seen.has(id)) { markActivity(id); return; }
+  if (bgAttach.has(id)) return;
+  if (send({ t: 'attach', id })) bgAttach.add(id);
+}
+// Leaving the page also counts as having seen the tab on screen.
+document.addEventListener('visibilitychange', () => { if (document.hidden && state.active) rememberSeen(state.active); });
+window.addEventListener('pagehide', () => { if (state.active) rememberSeen(state.active); });
+
 function activate(id) {
   if (!state.tabs.some((t) => t.id === id)) {
     state.pendingActivate = id;
@@ -531,6 +606,7 @@ function activate(id) {
   }
   const prev = state.views.get(state.active);
   if (prev && state.active !== id) {
+    rememberSeen(state.active);
     prev.el.classList.remove('visible');
     setWebgl(prev, false);
   }
@@ -561,6 +637,10 @@ function onList(tabs) {
   // The tab being renamed was closed elsewhere: drop the input.
   if (state.renaming && !ids.has(state.renaming)) state.renaming = null;
   for (const id of [...state.views.keys()]) if (!ids.has(id)) disposeView(id);
+  if ([...seen.keys()].some((id) => !ids.has(id))) {
+    for (const id of [...seen.keys()]) if (!ids.has(id)) seen.delete(id);
+    storage('wt.seen', JSON.stringify(Object.fromEntries(seen)));
+  }
   $('#empty').hidden = tabs.length > 0;
 
   if (state.pendingActivate && ids.has(state.pendingActivate)) {
