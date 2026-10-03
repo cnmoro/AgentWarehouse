@@ -92,12 +92,15 @@ History is stored in `data/history/<tab>/` (readable only by you). Each tab keep
 
 ### After a server restart
 
-The tabs come back with the same names, in the same folders. Programs that were running do not survive a restart, but:
+The tabs come back with the same names, in the same folders, at the same size, still showing what they showed. Programs that were running do not survive a restart, but:
 
+- What was on screen stays. The newest 2,000 lines of each tab are written back into it (scroll up to see them; older ones are in the history view, Ctrl+Shift+H), followed by a `── server restarted ──` line. A full-screen program (`claude`, vim, htop) draws on a separate screen that is normally lost when it ends: at shutdown, what it was showing is saved too, under a heading such as `── claude was showing this when the server stopped ──`.
 - If a command was running in a tab (say `claude`), the tab shows a short note, and once the shell shows its prompt the command is typed there, exactly as you entered it. Press Enter to start it again, or Ctrl+U to clear it. Nothing runs by itself, and nothing is typed while your startup files are still running or asking questions. The command is also the newest history entry, so ↑ brings it back if you cleared it. A command you hid from history with a leading space is not offered.
 - Each tab keeps its own bash command history, saved after every command, so ↑ recalls what you ran in that tab. A new tab starts with a copy of your normal `~/.bash_history`. Commands typed in the web terminal are not added to `~/.bash_history`.
 
-The state is saved every 10 seconds and on shutdown, in `data/tabs.json` and `data/shells/`.
+The state is saved every 10 seconds and on shutdown, in `data/tabs.json` and `data/shells/`; what the tabs showed is in `data/history/`.
+
+Terminals start without the `CLAUDECODE` / `CLAUDE_CODE_*` variables of a Claude Code session the server may have been started from: inherited, they would stop `claude` in the web terminal from saving its conversations (so `claude -r` would have nothing to resume).
 
 When the server stops, it hangs up every program started in any tab (including jobs left behind by shells that have exited), waits up to 2 seconds, then kills whatever is left. Run as the systemd service, it also stops programs that detached into their own session (`setsid`, daemons, tmux servers), so a stop or restart takes about 2 seconds and nothing keeps running. Started by hand (`npm start`), such detached programs are left alone, as they would be when closing any terminal.
 
