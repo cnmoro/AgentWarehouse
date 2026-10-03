@@ -577,23 +577,31 @@ function noteOutput(v) {
     // Let xterm finish parsing what has arrived, then look.
     v.term.write('', () => {
       if (v.id === state.active || state.views.get(v.id) !== v) return;
+      const now = screenHash(v.term);
       const before = seen.get(v.id);
-      if (before === undefined || before !== screenHash(v.term)) markActivity(v.id);
+      if (before === undefined) {
+        // Never viewed in this browser: what it shows now is the starting point.
+        seen.set(v.id, now);
+        storage('wt.seen', JSON.stringify(Object.fromEntries(seen)));
+      } else if (before !== now) {
+        markActivity(v.id);
+      }
     });
   }, wait);
 }
 
-// The server reports activity in a tab this page isn't attached to. Without
-// a fingerprint from an earlier visit there is nothing to compare: mark it.
-// Otherwise fetch the tab quietly; its snapshot and further output are judged
-// like any background tab's.
-function onAct(id) {
-  if (id === state.active) return;
+// Fetch a hidden tab quietly; its snapshot and further output are judged like
+// any background tab's.
+function fetchInBackground(id) {
+  if (id === state.active || bgAttach.has(id)) return;
   const v = state.views.get(id);
   if (v && v.attached) return; // its output reaches us directly
-  if (!seen.has(id)) { markActivity(id); return; }
-  if (bgAttach.has(id)) return;
   if (send({ t: 'attach', id })) bgAttach.add(id);
+}
+
+// The server reports activity in a tab this page isn't attached to.
+function onAct(id) {
+  fetchInBackground(id);
 }
 // Leaving the page also counts as having seen the tab on screen.
 document.addEventListener('visibilitychange', () => { if (document.hidden && state.active) rememberSeen(state.active); });
@@ -662,6 +670,9 @@ function onList(tabs) {
       if (tab) document.title = `${tab.name} · Web Terminal`;
     }
   }
+  // Tabs never viewed in this browser: take their current screen as the
+  // starting point, so the yellow dot can tell a real change from a redraw.
+  for (const t of tabs) if (!seen.has(t.id)) fetchInBackground(t.id);
   // Clicking a sidebar button that then disappeared leaves focus nowhere.
   if (document.activeElement === document.body) focusActive();
 }
