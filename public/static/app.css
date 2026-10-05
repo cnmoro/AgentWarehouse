@@ -500,3 +500,17 @@ body.resizing #main { pointer-events: none; }
   .ftime, .files-cols button:nth-child(3) { display: none; }
   .files-toolbar .tool-btn { padding: 0 8px; }
 }
+
+/* ---------- hidden sessions ---------- */
+.tab .actions .eye { display: grid; place-items: center; }
+.tab.hidden-session { opacity: .7; }
+.tab.hidden-session:hover, .tab.hidden-session.active { opacity: 1; }
+.hidden-head { list-style: none; margin: 8px 0 2px; }
+.hidden-head button {
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 8px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  cursor: pointer; text-align: left;
+}
+.hidden-head button:hover, .hidden-head button:focus-visible { color: var(--text); background: var(--panel-2); outline: none; }
+.hidden-head .chev { width: 10px; font-size: 10px; }
+.hidden-head .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 3px rgba(224,176,77,.18); margin-left: auto; }

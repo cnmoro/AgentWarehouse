@@ -665,6 +665,11 @@ function onList(tabs, groups) {
     storage('wt.lastTab', JSON.stringify(Object.fromEntries(lastTab)));
   }
   $('#empty').hidden = tabs.length > 0;
+  const live = new Set(sessions().map((g) => g.id));
+  if ([...hiddenIds].some((id) => !live.has(id))) {
+    for (const id of [...hiddenIds]) if (!live.has(id)) hiddenIds.delete(id);
+    storage('wt.hidden', JSON.stringify([...hiddenIds]));
+  }
 
   if (state.pendingActivate && ids.has(state.pendingActivate)) {
     const id = state.pendingActivate;
@@ -865,13 +870,14 @@ function renderSidebar() {
   const hadFocus = tabsEl.contains(document.activeElement) ? document.activeElement.closest('.tab')?.dataset.id : null;
   const current = sessionOf(state.active);
   tabsEl.textContent = '';
-  for (const g of sessions()) {
+  const addItem = (g, hidden) => {
     const members = tabsOf(g.id);
     const active = g.id === current;
     const li = document.createElement('li');
     li.className = 'tab';
     li.dataset.id = g.id;
-    li.draggable = true;
+    li.draggable = !hidden;
+    if (hidden) li.classList.add('hidden-session');
     li.tabIndex = active ? 0 : -1;
     li.setAttribute('role', 'tab');
     li.setAttribute('aria-selected', String(active));
@@ -898,6 +904,7 @@ function renderSidebar() {
     const actions = document.createElement('span');
     actions.className = 'actions';
     actions.append(
+      eyeButton(g, hidden),
       actionButton('⏱', 'Full history (Ctrl+Shift+H)', `History of ${g.name}`, () => {
         if (sessionOf(state.active) !== g.id) activateSession(g.id);
         histOpen();
@@ -909,11 +916,63 @@ function renderSidebar() {
     li.append(actions);
     li.onclick = () => activateSession(g.id);
     name.ondblclick = (e) => { e.stopPropagation(); renameSession(g.id); };
-    addDrag(li);
+    if (!hidden) addDrag(li);
     tabsEl.appendChild(li);
     if (hadFocus === g.id) li.focus();
+  };
+  const all = sessions();
+  all.filter((g) => !hiddenIds.has(g.id)).forEach((g) => addItem(g, false));
+  const hid = all.filter((g) => hiddenIds.has(g.id));
+  if (hid.length) {
+    // The section opens by itself while the session on screen is in it.
+    const open = hiddenOpen || hid.some((g) => g.id === current);
+    const head = document.createElement('li');
+    head.className = 'hidden-head';
+    head.setAttribute('role', 'presentation');
+    const b = document.createElement('button');
+    b.setAttribute('aria-expanded', String(open));
+    const changed = !open && hid.some((g) => tabsOf(g.id).some((t) => state.activity.has(t.id)));
+    b.innerHTML = `<span class="chev">${open ? '▾' : '▸'}</span><span>Hidden (${hid.length})</span>${changed ? '<span class="dot warn"></span>' : ''}`;
+    b.onclick = () => { hiddenOpen = !hiddenOpen; storage('wt.hiddenOpen', hiddenOpen ? '1' : '0'); renderSidebar(); };
+    head.append(b);
+    tabsEl.appendChild(head);
+    if (open) hid.forEach((g) => addItem(g, true));
   }
   tabsEl.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest' });
+}
+
+// Hiding a session only takes it out of the main list (into a collapsible
+// section at the end); its shells keep running. Remembered per browser.
+const hiddenIds = new Set(JSON.parse(storage('wt.hidden') || '[]'));
+let hiddenOpen = storage('wt.hiddenOpen') !== '0';
+const EYE = '<svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.6" d="M1.5 10S4.5 4.5 10 4.5 18.5 10 18.5 10 15.5 15.5 10 15.5 1.5 10 1.5 10z"/><circle cx="10" cy="10" r="2.6" fill="currentColor"/></svg>';
+
+function eyeButton(g, hidden) {
+  const b = document.createElement('button');
+  b.innerHTML = EYE;
+  b.className = 'eye';
+  b.title = hidden ? 'Show in the list' : 'Hide from the list';
+  b.tabIndex = -1;
+  b.setAttribute('aria-label', `${hidden ? 'Show' : 'Hide'} ${g.name}`);
+  b.onclick = (e) => { e.stopPropagation(); setHidden(g.id, !hidden); };
+  return b;
+}
+
+function setHidden(gid, hide) {
+  if (hide) {
+    // Leaving the session on screen: move to its neighbour in the visible list.
+    if (sessionOf(state.active) === gid) {
+      const vis = sessions().filter((g) => !hiddenIds.has(g.id));
+      const i = vis.findIndex((g) => g.id === gid);
+      const next = vis[i + 1] || vis[i - 1];
+      if (next) activateSession(next.id);
+    }
+    hiddenIds.add(gid);
+  } else {
+    hiddenIds.delete(gid);
+  }
+  storage('wt.hidden', JSON.stringify([...hiddenIds]));
+  renderTabs();
 }
 
 function renderStrip() {
