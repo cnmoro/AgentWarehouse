@@ -411,11 +411,31 @@ function openLink(uri) {
 }
 
 // Browsers cap live WebGL contexts (~16), so only the visible terminal gets one.
+// The GPU renderer caches every glyph/colour pair it draws. A program that
+// animates through many shades (opencode's progress bar, a gradient) keeps
+// producing pairs it has never drawn: the cache grows a page every few seconds
+// and each page is a texture upload, which shows as flicker. A terminal that
+// does this (SWITCH_PAGES new cache pages within SWITCH_MS) is switched to the
+// plain renderer, which has no cache. Normal use adds one or two pages, early.
+const SWITCH_PAGES = 6;
+const SWITCH_MS = 30000;
+
 function setWebgl(view, on) {
-  if (on && !view.webgl) {
+  if (on && !view.webgl && !view.plainRenderer) {
     try {
       const addon = new WebglAddon.WebglAddon();
       addon.onContextLoss(() => { addon.dispose(); view.webgl = null; });
+      const pages = [];
+      addon.onAddTextureAtlasCanvas(() => {
+        const now = Date.now();
+        pages.push(now);
+        while (pages.length && now - pages[0] > SWITCH_MS) pages.shift();
+        if (pages.length >= SWITCH_PAGES && view.webgl === addon) {
+          view.plainRenderer = true;
+          // Not inside the event that is still being delivered.
+          setTimeout(() => { if (view.webgl === addon) { addon.dispose(); view.webgl = null; } }, 0);
+        }
+      });
       view.term.loadAddon(addon);
       view.webgl = addon;
     } catch { /* falls back to the DOM renderer */ }
