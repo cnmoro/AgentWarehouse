@@ -534,3 +534,11 @@ body.resizing #main { pointer-events: none; }
 #selbar button:active { background: #26303d; }
 /* No browser selection or callout menu on the terminal while touching it. */
 .term { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+
+/* Selection handles: a 44 px touch target with the drop drawn inside it, its
+   sharp corner on the edge of the selection (top right for the start, top left for the end). */
+.selhandle { position: fixed; z-index: 59; width: 44px; height: 44px; margin: -2px 0 0 -22px; touch-action: none; }
+.selhandle[hidden] { display: none; }
+.selhandle span { position: absolute; top: 4px; width: 20px; height: 20px; background: var(--accent); box-shadow: 0 2px 6px rgba(0,0,0,.5); }
+.selhandle.lo span { left: 2px; border-radius: 50% 0 50% 50%; }
+.selhandle.hi span { left: 22px; border-radius: 0 50% 50% 50%; }

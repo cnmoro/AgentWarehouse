@@ -379,40 +379,111 @@ function createView(id) {
 //  - Pressing and holding selects the word under the finger; keep dragging to
 //    extend, lift to get a small bar with Copy. (xterm has no touch selection,
 //    and the browser's own long-press only offers "Paste".)
+// The touch selection in cells (buffer rows): `lo` and `hi`, both included.
+let touchSel = null; // { term, lo, hi }
+const cellIndex = (term, c) => c.row * term.cols + c.col;
+const screenOf = (term) => term.element && term.element.querySelector('.xterm-screen');
+
+function cellAtPoint(term, x, y) {
+  const r = screenOf(term).getBoundingClientRect();
+  const col = Math.max(0, Math.min(term.cols - 1, Math.floor((x - r.left) / (r.width / term.cols))));
+  const row = Math.max(0, Math.min(term.rows - 1, Math.floor((y - r.top) / (r.height / term.rows))));
+  return { col, row: row + term.buffer.active.viewportY };
+}
+
+function selectCells(term, a, b) {
+  const [lo, hi] = cellIndex(term, a) <= cellIndex(term, b) ? [a, b] : [b, a];
+  term.select(lo.col, lo.row, cellIndex(term, hi) - cellIndex(term, lo) + 1);
+  touchSel = { term, lo: { ...lo }, hi: { ...hi } };
+}
+
 const selBar = document.createElement('div');
 selBar.id = 'selbar';
 selBar.hidden = true;
 selBar.innerHTML = '<button data-a="copy">Copy</button><button data-a="line">Line</button><button data-a="x" aria-label="Cancel selection">✕</button>';
 document.body.appendChild(selBar);
-let selBarTerm = null;
+// Handles at both ends of the selection, to pull it longer or shorter.
+const handles = ['lo', 'hi'].map((end) => {
+  const h = document.createElement('div');
+  h.className = `selhandle ${end}`;
+  h.hidden = true;
+  h.innerHTML = '<span></span>';
+  document.body.appendChild(h);
+  return h;
+});
+let handleDrag = null; // 'lo' | 'hi'
 selBar.addEventListener('pointerdown', (e) => e.preventDefault()); // keep the keyboard as it is
 selBar.addEventListener('click', (e) => {
   const act = e.target.closest('button')?.dataset.a;
-  const term = selBarTerm;
+  const term = touchSel && touchSel.term;
   if (!act || !term) return;
   if (act === 'copy') { copyAndTell(term.getSelection()); term.clearSelection(); hideSelBar(); }
   else if (act === 'line') {
-    const p = term.getSelectionPosition();
-    if (p) { term.select(0, p.start.y - 1, term.cols * (p.end.y - p.start.y + 1)); showSelBar(term); }
+    selectCells(term, { col: 0, row: touchSel.lo.row }, { col: term.cols - 1, row: touchSel.hi.row });
+    showSelBar(term);
   } else { term.clearSelection(); hideSelBar(); }
 });
-function hideSelBar() { selBar.hidden = true; selBarTerm = null; }
-function showSelBar(term) {
-  const pos = term.getSelectionPosition();
-  const screen = term.element && term.element.querySelector('.xterm-screen');
-  if (!pos || !screen) return;
+handles.forEach((h, i) => {
+  const end = i === 0 ? 'lo' : 'hi';
+  h.addEventListener('touchstart', (e) => { e.preventDefault(); handleDrag = end; selBar.hidden = true; }, { passive: false });
+  h.addEventListener('touchmove', (e) => {
+    if (!handleDrag || !touchSel) return;
+    e.preventDefault();
+    const { term } = touchSel;
+    const t = e.touches[0];
+    const ch = screenOf(term).getBoundingClientRect().height / term.rows;
+    // The handle hangs below its cell: the cell being pointed at is the row above the finger.
+    const c = cellAtPoint(term, t.clientX, t.clientY - 14 - ch / 2);
+    const other = handleDrag === 'lo' ? touchSel.hi : touchSel.lo;
+    selectCells(term, c, other);
+    placeHandles(term);
+  }, { passive: false });
+  const end_ = () => { if (handleDrag && touchSel) { handleDrag = null; showSelBar(touchSel.term); } };
+  h.addEventListener('touchend', end_);
+  h.addEventListener('touchcancel', end_);
+});
+
+function hideSelBar() {
+  selBar.hidden = true;
+  handles.forEach((h) => { h.hidden = true; });
+  touchSel = null;
+  handleDrag = null;
+}
+
+function placeHandles(term) {
+  const screen = screenOf(term);
+  if (!touchSel || touchSel.term !== term || !screen) return;
   const r = screen.getBoundingClientRect();
-  const cellH = r.height / term.rows;
-  const top = r.top + (pos.start.y - 1 - term.buffer.active.viewportY) * cellH;
-  const bottom = r.top + (pos.end.y - term.buffer.active.viewportY) * cellH;
-  selBarTerm = term;
+  const cw = r.width / term.cols;
+  const ch = r.height / term.rows;
+  const vy = term.buffer.active.viewportY;
+  const place = (h, c, right) => {
+    const row = c.row - vy;
+    h.hidden = row < 0 || row >= term.rows;
+    if (h.hidden) return;
+    h.style.left = `${r.left + (right ? (c.col + 1) * cw : c.col * cw)}px`;
+    h.style.top = `${r.top + (row + 1) * ch}px`;
+  };
+  place(handles[0], touchSel.lo, false);
+  place(handles[1], touchSel.hi, true);
+}
+
+function showSelBar(term) {
+  const screen = screenOf(term);
+  if (!touchSel || touchSel.term !== term || !screen) return;
+  const r = screen.getBoundingClientRect();
+  const ch = r.height / term.rows;
+  const vy = term.buffer.active.viewportY;
+  const top = r.top + (touchSel.lo.row - vy) * ch;
+  const bottom = r.top + (touchSel.hi.row - vy + 1) * ch;
   selBar.hidden = false;
   const w = selBar.offsetWidth;
-  const x = Math.max(8, Math.min(innerWidth - w - 8, r.left + (pos.start.x - 1) * (r.width / term.cols)));
-  // Above the selection; below it when there is no room above.
-  const y = top - selBar.offsetHeight - 10 >= 4 ? top - selBar.offsetHeight - 10 : bottom + 10;
+  const x = Math.max(8, Math.min(innerWidth - w - 8, r.left + touchSel.lo.col * (r.width / term.cols)));
+  // Above the selection; below it (past the handles) when there is no room above.
+  const y = top - selBar.offsetHeight - 10 >= 4 ? top - selBar.offsetHeight - 10 : bottom + 36;
   selBar.style.left = `${x}px`;
   selBar.style.top = `${Math.max(4, Math.min(innerHeight - selBar.offsetHeight - 4, y))}px`;
+  placeHandles(term);
 }
 
 function addTouchScroll(el, term) {
@@ -429,6 +500,7 @@ function addTouchScroll(el, term) {
   let scrolling = false;
   let selecting = null; // { from, to } cells of the word first pressed
   let touching = 0;     // until shortly after the finger lifts: swallow the browser's long-press menu
+  let noMouseUntil = 0; // after a selection: ignore the mouse events the browser makes up from the touch
 
   const cellHeight = () => el.querySelector('.xterm-rows')?.firstElementChild?.getBoundingClientRect().height
     || term.options.fontSize * 1.2;
@@ -443,13 +515,8 @@ function addTouchScroll(el, term) {
     const lines = Math.trunc(carry);
     if (lines) { term.scrollLines(lines); carry -= lines; }
   };
-  const cellAt = (x, y) => {
-    const r = (el.querySelector('.xterm-screen') || el).getBoundingClientRect();
-    const col = Math.max(0, Math.min(term.cols - 1, Math.floor((x - r.left) / (r.width / term.cols))));
-    const row = Math.max(0, Math.min(term.rows - 1, Math.floor((y - r.top) / (r.height / term.rows))));
-    return { col, row: row + term.buffer.active.viewportY };
-  };
-  const index = (c) => c.row * term.cols + c.col;
+  const cellAt = (x, y) => cellAtPoint(term, x, y);
+  const index = (c) => cellIndex(term, c);
   const wordAt = (c) => {
     const text = term.buffer.active.getLine(c.row)?.translateToString(false) || '';
     const blank = (i) => !text[i] || /\s/.test(text[i]);
@@ -460,10 +527,7 @@ function addTouchScroll(el, term) {
     while (z < term.cols - 1 && !blank(z + 1)) z++;
     return { from: { col: a, row: c.row }, to: { col: z, row: c.row } };
   };
-  const selectBetween = (a, b) => {
-    const [lo, hi] = index(a) <= index(b) ? [a, b] : [b, a];
-    term.select(lo.col, lo.row, index(hi) - index(lo) + 1);
-  };
+  const selectBetween = (a, b) => selectCells(term, a, b);
   const extendTo = (x, y) => {
     const c = cellAt(x, y);
     if (index(c) < index(selecting.from)) selectBetween(c, selecting.to);
@@ -475,7 +539,7 @@ function addTouchScroll(el, term) {
     cancelAnimationFrame(coast);
     clearTimeout(hold);
     touching = 1;
-    if (selBarTerm === term && !selecting) { term.clearSelection(); hideSelBar(); }
+    if (touchSel && touchSel.term === term && !selecting) { term.clearSelection(); hideSelBar(); }
     lastY = e.touches.length === 1 ? e.touches[0].clientY : null;
     lastT = e.timeStamp;
     velocity = 0;
@@ -521,6 +585,10 @@ function addTouchScroll(el, term) {
     if (selecting) {
       selecting = null;
       lastY = null;
+      // Lifting a finger makes the browser send a mouse click next, which the
+      // terminal takes as "clicked elsewhere" and clears the selection with.
+      if (e.cancelable) e.preventDefault();
+      noMouseUntil = Date.now() + 800;
       if (term.hasSelection()) showSelBar(term);
       return;
     }
@@ -539,8 +607,9 @@ function addTouchScroll(el, term) {
       coast = requestAnimationFrame(step);
     };
     coast = requestAnimationFrame(step);
-  }, { passive: true });
+  }, { passive: false });
 
+  term.onScroll(() => { if (touchSel && touchSel.term === term) { placeHandles(term); if (!selBar.hidden) showSelBar(term); } });
   el.addEventListener('touchcancel', () => {
     clearTimeout(hold);
     cancelAnimationFrame(coast);
@@ -548,6 +617,12 @@ function addTouchScroll(el, term) {
     selecting = null;
     touching = 0;
   }, { passive: true });
+
+  for (const type of ['mousedown', 'mouseup', 'click']) {
+    el.addEventListener(type, (e) => {
+      if (Date.now() < noMouseUntil) { e.stopPropagation(); e.preventDefault(); }
+    }, true);
+  }
 
   // The long-press menu ("Paste") the browser opens on the terminal's hidden
   // input: not while a finger is down or just lifted. A mouse's right-click is
