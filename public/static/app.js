@@ -368,29 +368,66 @@ function createView(id) {
 }
 
 // xterm 6 has no touch scrolling of its own. On the normal screen a swipe moves
-// through the history; on the alternate screen (vim, less) it is left alone.
+// through the history. Where a program has taken over (the alternate screen of
+// claude, opencode, vim, less; or any program that asked for mouse reports) the
+// swipe is turned into mouse-wheel events on the terminal: xterm then reports
+// them to the program, or sends arrow keys when it did not ask for the mouse,
+// exactly as a wheel would. A fast flick keeps scrolling for a moment.
 function addTouchScroll(el, term) {
   let lastY = null;
+  let lastT = 0;
   let carry = 0;
+  let velocity = 0; // px per ms, positive = content moving up
+  let coast = 0;
+  const cellHeight = () => el.querySelector('.xterm-rows')?.firstElementChild?.getBoundingClientRect().height
+    || term.options.fontSize * 1.2;
+  const wheel = (dy, x, y) => {
+    const target = el.querySelector('.xterm-screen') || el;
+    target.dispatchEvent(new WheelEvent('wheel', { deltaY: dy, deltaMode: 0, clientX: x, clientY: y, bubbles: true, cancelable: true }));
+  };
+  const handedOver = () => term.buffer.active.type !== 'normal' || term.modes.mouseTrackingMode !== 'none';
+  const scroll = (dy, x, y) => {
+    if (handedOver()) { wheel(dy, x, y); return; }
+    carry += dy / cellHeight();
+    const lines = Math.trunc(carry);
+    if (lines) { term.scrollLines(lines); carry -= lines; }
+  };
   el.addEventListener('touchstart', (e) => {
+    cancelAnimationFrame(coast);
     lastY = e.touches.length === 1 ? e.touches[0].clientY : null;
+    lastT = e.timeStamp;
+    velocity = 0;
     carry = 0;
   }, { passive: true });
   el.addEventListener('touchmove', (e) => {
-    if (lastY === null || e.touches.length !== 1 || term.buffer.active.type !== 'normal') return;
-    const y = e.touches[0].clientY;
-    const cell = el.querySelector('.xterm-rows')?.firstElementChild?.getBoundingClientRect().height
-      || term.options.fontSize * 1.2;
-    carry += (lastY - y) / cell;
-    lastY = y;
-    const lines = Math.trunc(carry);
-    if (lines) {
-      term.scrollLines(lines);
-      carry -= lines;
-    }
+    if (lastY === null || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const dy = lastY - t.clientY;
+    const dt = Math.max(1, e.timeStamp - lastT);
+    velocity = 0.6 * velocity + 0.4 * (dy / dt);
+    lastY = t.clientY;
+    lastT = e.timeStamp;
+    scroll(dy, t.clientX, t.clientY);
     e.preventDefault();
   }, { passive: false });
-  el.addEventListener('touchend', () => { lastY = null; }, { passive: true });
+  el.addEventListener('touchend', (e) => {
+    const x = e.changedTouches[0]?.clientX ?? 0;
+    const y = e.changedTouches[0]?.clientY ?? 0;
+    const flick = lastY !== null && e.timeStamp - lastT < 80 && Math.abs(velocity) > 0.4;
+    lastY = null;
+    if (!flick) return;
+    let v = velocity;
+    let prev = performance.now();
+    const step = (now) => {
+      v *= 0.95 ** ((now - prev) / 16);
+      if (Math.abs(v) < 0.05) return;
+      scroll(v * (now - prev), x, y);
+      prev = now;
+      coast = requestAnimationFrame(step);
+    };
+    coast = requestAnimationFrame(step);
+  }, { passive: true });
+  el.addEventListener('touchcancel', () => { lastY = null; cancelAnimationFrame(coast); }, { passive: true });
 }
 
 function disposeView(id) {
@@ -1820,28 +1857,30 @@ window.addEventListener('beforeunload', (e) => {
 // Sidebar width: drag its right edge (or focus the edge and use the arrow
 // keys); double-click resets it. Remembered per browser. The terminal refits
 // through the ResizeObserver below.
-const SIDEBAR_DEFAULT = 240;
+// On a phone the sidebar is a drawer over the terminal: wider by default (a
+// session name needs room beside its buttons) and allowed almost full width.
+const sidebarDefault = () => (mobile.matches ? Math.min(320, Math.round(window.innerWidth * 0.85)) : 240);
 const SIDEBAR_MIN = 160;
 const resizerEl = $('#sidebar-resizer');
 
 function sidebarMax() {
-  return Math.max(SIDEBAR_MIN, Math.min(640, Math.round(window.innerWidth * 0.6)));
+  return Math.max(SIDEBAR_MIN, mobile.matches ? Math.round(window.innerWidth * 0.92) : Math.min(640, Math.round(window.innerWidth * 0.6)));
 }
 
 function setSidebarWidth(px, { save = false } = {}) {
   const w = Math.round(Math.min(sidebarMax(), Math.max(SIDEBAR_MIN, px)));
   appEl.style.setProperty('--sidebar-w', `${w}px`);
   resizerEl.setAttribute('aria-valuenow', String(w));
-  if (save) storage('wt.sidebarWidth', w === SIDEBAR_DEFAULT ? '' : String(w));
+  if (save) storage('wt.sidebarWidth', w === sidebarDefault() ? '' : String(w));
   return w;
 }
 
 function sidebarWidth() {
-  return $('#sidebar').getBoundingClientRect().width || SIDEBAR_DEFAULT;
+  return $('#sidebar').getBoundingClientRect().width || sidebarDefault();
 }
 
 resizerEl.setAttribute('aria-valuemin', String(SIDEBAR_MIN));
-setSidebarWidth(Number(storage('wt.sidebarWidth')) || SIDEBAR_DEFAULT);
+setSidebarWidth(Number(storage('wt.sidebarWidth')) || sidebarDefault());
 
 resizerEl.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;
@@ -1864,22 +1903,23 @@ resizerEl.addEventListener('pointerdown', (e) => {
   resizerEl.addEventListener('pointercancel', end);
 });
 resizerEl.addEventListener('dblclick', () => {
-  setSidebarWidth(SIDEBAR_DEFAULT, { save: true });
+  setSidebarWidth(sidebarDefault(), { save: true });
   focusActive();
 });
 resizerEl.addEventListener('keydown', (e) => {
   const step = e.shiftKey ? 64 : 16;
   if (e.key === 'ArrowLeft') setSidebarWidth(sidebarWidth() - step, { save: true });
   else if (e.key === 'ArrowRight') setSidebarWidth(sidebarWidth() + step, { save: true });
-  else if (e.key === 'Home') setSidebarWidth(SIDEBAR_DEFAULT, { save: true });
+  else if (e.key === 'Home') setSidebarWidth(sidebarDefault(), { save: true });
   else if (e.key === 'Escape' || e.key === 'Enter') focusActive();
   else return;
   e.preventDefault();
 });
 // A narrower window may no longer fit the remembered width; clamp it (without
 // forgetting the saved value, which applies again once the window is wider).
+mobile.addEventListener('change', () => setSidebarWidth(Number(storage('wt.sidebarWidth')) || sidebarDefault()));
 window.addEventListener('resize', () => {
-  setSidebarWidth(Number(storage('wt.sidebarWidth')) || SIDEBAR_DEFAULT);
+  setSidebarWidth(Number(storage('wt.sidebarWidth')) || sidebarDefault());
 });
 
 setSidebar(!(storage('wt.collapsed') || mobile.matches));
