@@ -58,7 +58,7 @@ Shortcuts match on the physical key, so they work with any keyboard layout. Beca
 
 The browser keeps some keys for itself, and they never reach the shell: Ctrl+T, Ctrl+N, Ctrl+Tab, Ctrl+PgUp/PgDn and Ctrl+Shift+T/N/W. Ctrl+W would close the page; you get a confirmation first, but it still does not delete a word. Use Alt+Backspace instead.
 
-On a phone, a row of keys under the terminal gives Esc, Tab, Ctrl (tap it, then a letter), arrows, and a few symbols that are awkward on phone keyboards. Swipe up and down to scroll: through the history, or, in full-screen programs (claude, opencode, vim, less), as the mouse wheel; a quick flick keeps going for a moment. The sidebar opens at 320 px wide here and its edge can be dragged.
+On a phone, press and hold on the terminal to select the word under your finger (it works inside `claude`, `opencode`, vim too); keep dragging to extend, lift to get a small bar: **Copy**, **Line** (the whole line) or ✕. The Ctrl key on the key bar applies to the next key you type and then releases by itself (also after 8 seconds, or when you switch tabs). On a phone, a row of keys under the terminal gives Esc, Tab, Ctrl (tap it, then a letter), arrows, and a few symbols that are awkward on phone keyboards. Swipe up and down to scroll: through the history, or, in full-screen programs (claude, opencode, vim, less), as the mouse wheel; a quick flick keeps going for a moment. The sidebar opens at 320 px wide here and its edge can be dragged.
 
 The browser asks before you leave the page, so a stray Ctrl+W (delete word in bash) doesn't close it. The shells keep running either way.
 

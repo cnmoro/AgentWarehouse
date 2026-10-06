@@ -72,6 +72,7 @@ function sendInput(id, data, type = 'in') {
 
 function setConnected(up) {
   state.connected = up;
+  if (!up && state.ctrlSticky) setCtrlSticky(false);
   for (const el of $$('.conn')) {
     el.classList.toggle('up', up);
     el.title = up ? 'Connected' : 'Disconnected, reconnecting…';
@@ -350,8 +351,10 @@ function createView(id) {
   });
   term.onData((d) => {
     reclaimSize(id);
-    if (state.ctrlSticky && d.length === 1) {
-      d = ctrlChar(d);
+    if (state.ctrlSticky) {
+      // One typed character becomes its control character; anything else
+      // (a suggestion, a paste, an arrow sequence) just releases Ctrl.
+      if (d.length === 1) d = ctrlChar(d);
       setCtrlSticky(false);
     }
     sendInput(id, d);
@@ -367,18 +370,66 @@ function createView(id) {
   return view;
 }
 
-// xterm 6 has no touch scrolling of its own. On the normal screen a swipe moves
-// through the history. Where a program has taken over (the alternate screen of
-// claude, opencode, vim, less; or any program that asked for mouse reports) the
-// swipe is turned into mouse-wheel events on the terminal: xterm then reports
-// them to the program, or sends arrow keys when it did not ask for the mouse,
-// exactly as a wheel would. A fast flick keeps scrolling for a moment.
+// Touch on the terminal.
+//  - A swipe scrolls. On the normal screen it moves through the history; where
+//    a program has taken over (the alternate screen of claude, opencode, vim,
+//    less; or any program that asked for mouse reports) it becomes mouse-wheel
+//    events on the terminal, which xterm reports to the program or turns into
+//    arrow keys, as a wheel would. A quick flick keeps going for a moment.
+//  - Pressing and holding selects the word under the finger; keep dragging to
+//    extend, lift to get a small bar with Copy. (xterm has no touch selection,
+//    and the browser's own long-press only offers "Paste".)
+const selBar = document.createElement('div');
+selBar.id = 'selbar';
+selBar.hidden = true;
+selBar.innerHTML = '<button data-a="copy">Copy</button><button data-a="line">Line</button><button data-a="x" aria-label="Cancel selection">✕</button>';
+document.body.appendChild(selBar);
+let selBarTerm = null;
+selBar.addEventListener('pointerdown', (e) => e.preventDefault()); // keep the keyboard as it is
+selBar.addEventListener('click', (e) => {
+  const act = e.target.closest('button')?.dataset.a;
+  const term = selBarTerm;
+  if (!act || !term) return;
+  if (act === 'copy') { copyAndTell(term.getSelection()); term.clearSelection(); hideSelBar(); }
+  else if (act === 'line') {
+    const p = term.getSelectionPosition();
+    if (p) { term.select(0, p.start.y - 1, term.cols * (p.end.y - p.start.y + 1)); showSelBar(term); }
+  } else { term.clearSelection(); hideSelBar(); }
+});
+function hideSelBar() { selBar.hidden = true; selBarTerm = null; }
+function showSelBar(term) {
+  const pos = term.getSelectionPosition();
+  const screen = term.element && term.element.querySelector('.xterm-screen');
+  if (!pos || !screen) return;
+  const r = screen.getBoundingClientRect();
+  const cellH = r.height / term.rows;
+  const top = r.top + (pos.start.y - 1 - term.buffer.active.viewportY) * cellH;
+  const bottom = r.top + (pos.end.y - term.buffer.active.viewportY) * cellH;
+  selBarTerm = term;
+  selBar.hidden = false;
+  const w = selBar.offsetWidth;
+  const x = Math.max(8, Math.min(innerWidth - w - 8, r.left + (pos.start.x - 1) * (r.width / term.cols)));
+  // Above the selection; below it when there is no room above.
+  const y = top - selBar.offsetHeight - 10 >= 4 ? top - selBar.offsetHeight - 10 : bottom + 10;
+  selBar.style.left = `${x}px`;
+  selBar.style.top = `${Math.max(4, Math.min(innerHeight - selBar.offsetHeight - 4, y))}px`;
+}
+
 function addTouchScroll(el, term) {
+  const HOLD_MS = 420;
+  const SLOP = 10;
   let lastY = null;
   let lastT = 0;
   let carry = 0;
   let velocity = 0; // px per ms, positive = content moving up
   let coast = 0;
+  let hold = 0;
+  let startX = 0;
+  let startY = 0;
+  let scrolling = false;
+  let selecting = null; // { from, to } cells of the word first pressed
+  let touching = 0;     // until shortly after the finger lifts: swallow the browser's long-press menu
+
   const cellHeight = () => el.querySelector('.xterm-rows')?.firstElementChild?.getBoundingClientRect().height
     || term.options.fontSize * 1.2;
   const wheel = (dy, x, y) => {
@@ -392,16 +443,69 @@ function addTouchScroll(el, term) {
     const lines = Math.trunc(carry);
     if (lines) { term.scrollLines(lines); carry -= lines; }
   };
+  const cellAt = (x, y) => {
+    const r = (el.querySelector('.xterm-screen') || el).getBoundingClientRect();
+    const col = Math.max(0, Math.min(term.cols - 1, Math.floor((x - r.left) / (r.width / term.cols))));
+    const row = Math.max(0, Math.min(term.rows - 1, Math.floor((y - r.top) / (r.height / term.rows))));
+    return { col, row: row + term.buffer.active.viewportY };
+  };
+  const index = (c) => c.row * term.cols + c.col;
+  const wordAt = (c) => {
+    const text = term.buffer.active.getLine(c.row)?.translateToString(false) || '';
+    const blank = (i) => !text[i] || /\s/.test(text[i]);
+    if (blank(c.col)) return { from: c, to: c };
+    let a = c.col;
+    let z = c.col;
+    while (a > 0 && !blank(a - 1)) a--;
+    while (z < term.cols - 1 && !blank(z + 1)) z++;
+    return { from: { col: a, row: c.row }, to: { col: z, row: c.row } };
+  };
+  const selectBetween = (a, b) => {
+    const [lo, hi] = index(a) <= index(b) ? [a, b] : [b, a];
+    term.select(lo.col, lo.row, index(hi) - index(lo) + 1);
+  };
+  const extendTo = (x, y) => {
+    const c = cellAt(x, y);
+    if (index(c) < index(selecting.from)) selectBetween(c, selecting.to);
+    else if (index(c) > index(selecting.to)) selectBetween(selecting.from, c);
+    else selectBetween(selecting.from, selecting.to);
+  };
+
   el.addEventListener('touchstart', (e) => {
     cancelAnimationFrame(coast);
+    clearTimeout(hold);
+    touching = 1;
+    if (selBarTerm === term && !selecting) { term.clearSelection(); hideSelBar(); }
     lastY = e.touches.length === 1 ? e.touches[0].clientY : null;
     lastT = e.timeStamp;
     velocity = 0;
     carry = 0;
+    scrolling = false;
+    selecting = null;
+    if (e.touches.length !== 1) return;
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    hold = setTimeout(() => {
+      if (scrolling) return;
+      const word = wordAt(cellAt(startX, startY));
+      selecting = word;
+      selectBetween(word.from, word.to);
+      if (navigator.vibrate) navigator.vibrate(12);
+    }, HOLD_MS);
   }, { passive: true });
+
   el.addEventListener('touchmove', (e) => {
-    if (lastY === null || e.touches.length !== 1) return;
+    if (e.touches.length !== 1) { clearTimeout(hold); return; }
     const t = e.touches[0];
+    if (selecting) {
+      extendTo(t.clientX, t.clientY);
+      e.preventDefault();
+      return;
+    }
+    if (lastY === null) return;
+    if (!scrolling && Math.hypot(t.clientX - startX, t.clientY - startY) < SLOP) return; // still a press
+    scrolling = true;
+    clearTimeout(hold);
     const dy = lastY - t.clientY;
     const dt = Math.max(1, e.timeStamp - lastT);
     velocity = 0.6 * velocity + 0.4 * (dy / dt);
@@ -410,10 +514,19 @@ function addTouchScroll(el, term) {
     scroll(dy, t.clientX, t.clientY);
     e.preventDefault();
   }, { passive: false });
+
   el.addEventListener('touchend', (e) => {
+    clearTimeout(hold);
+    setTimeout(() => { touching = 0; }, 700);
+    if (selecting) {
+      selecting = null;
+      lastY = null;
+      if (term.hasSelection()) showSelBar(term);
+      return;
+    }
     const x = e.changedTouches[0]?.clientX ?? 0;
     const y = e.changedTouches[0]?.clientY ?? 0;
-    const flick = lastY !== null && e.timeStamp - lastT < 80 && Math.abs(velocity) > 0.4;
+    const flick = scrolling && lastY !== null && e.timeStamp - lastT < 80 && Math.abs(velocity) > 0.4;
     lastY = null;
     if (!flick) return;
     let v = velocity;
@@ -427,7 +540,19 @@ function addTouchScroll(el, term) {
     };
     coast = requestAnimationFrame(step);
   }, { passive: true });
-  el.addEventListener('touchcancel', () => { lastY = null; cancelAnimationFrame(coast); }, { passive: true });
+
+  el.addEventListener('touchcancel', () => {
+    clearTimeout(hold);
+    cancelAnimationFrame(coast);
+    lastY = null;
+    selecting = null;
+    touching = 0;
+  }, { passive: true });
+
+  // The long-press menu ("Paste") the browser opens on the terminal's hidden
+  // input: not while a finger is down or just lifted. A mouse's right-click is
+  // not affected.
+  el.addEventListener('contextmenu', (e) => { if (touching || selecting) e.preventDefault(); });
 }
 
 function disposeView(id) {
@@ -687,6 +812,7 @@ function activate(id) {
   hideHistPill();
   state.active = id;
   storage('wt.active', id);
+  if (state.ctrlSticky) setCtrlSticky(false);
   state.activity.delete(id);
   rememberLastTab(id);
 
@@ -1772,8 +1898,12 @@ function ctrlChar(ch) {
   return ch;
 }
 
+let ctrlTimer = 0;
 function setCtrlSticky(on) {
   state.ctrlSticky = on;
+  // A forgotten Ctrl would turn the next letter into a control key much later.
+  clearTimeout(ctrlTimer);
+  if (on) ctrlTimer = setTimeout(() => setCtrlSticky(false), 8000);
   const b = $('#keybar [data-key="ctrl"]');
   b.classList.toggle('on', on);
   b.setAttribute('aria-pressed', String(on));
@@ -1938,3 +2068,5 @@ termsEl.addEventListener('pointerdown', () => reclaimSize(state.active));
 setConnected(false);
 $('#banner').hidden = true;
 connect();
+
+document.addEventListener('visibilitychange', () => { if (document.hidden && state.ctrlSticky) setCtrlSticky(false); });

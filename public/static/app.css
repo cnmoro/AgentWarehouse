@@ -519,3 +519,18 @@ body.resizing #main { pointer-events: none; }
 .hidden-head button:hover, .hidden-head button:focus-visible { color: var(--text); background: var(--panel-2); outline: none; }
 .hidden-head .chev { width: 10px; font-size: 10px; }
 .hidden-head .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 3px rgba(224,176,77,.18); margin-left: auto; }
+
+/* ---------- touch selection bar ---------- */
+#selbar {
+  position: fixed; z-index: 60; display: flex; gap: 2px; padding: 4px; border-radius: 10px;
+  background: var(--panel-2); border: 1px solid #323b48; box-shadow: 0 6px 20px rgba(0,0,0,.5);
+}
+#selbar[hidden] { display: none; }
+#selbar button {
+  min-width: 52px; height: 38px; padding: 0 14px; border: 0; border-radius: 7px; background: transparent;
+  color: var(--text); font: 600 14px var(--sans); touch-action: manipulation;
+}
+#selbar button:first-child { color: var(--accent); }
+#selbar button:active { background: #26303d; }
+/* No browser selection or callout menu on the terminal while touching it. */
+.term { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
