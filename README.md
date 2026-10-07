@@ -70,11 +70,13 @@ When two browsers show the same terminal, the one you used last sets its size, a
 
 The folder button at the top of the sidebar (**Ctrl+Shift+F**, Cmd+Shift+F on a Mac) opens a file browser over the terminal, starting in your home folder.
 
-- **Navigate:** double-click folders, click the path to type one (`~` works), Backspace for the parent folder, Alt+←/→ for back and forward. Type a few letters to jump to a name; the filter box narrows the list.
+- **Navigate:** double-click folders, click the path bar to type a path (`~` works), Backspace or Alt+↑ for the parent folder, Alt+←/→ for back and forward. Type a few letters to jump to a name; the filter box narrows the list. Drag the bars between Places, the list and the preview to resize them (double-click a bar to reset; the widths are remembered).
+- **Select like in Windows Explorer:** click; Shift+click for a range; Ctrl+click to add or remove one (Cmd on a Mac); Ctrl+A for everything; press on empty space and drag a rectangle to select what it touches (hold Ctrl or Shift to add to the selection; the list scrolls when you drag past its edge).
+- **Cut, copy, paste, move:** Ctrl+C / Ctrl+X / Ctrl+V work on files and folders inside the browser (cut files are shown dimmed; Ctrl+Shift+C copies their paths as text). Drag files onto a folder, a path segment or a pin to move them; hold Ctrl (Option on a Mac) to copy. If a name already exists you choose Replace, Keep both or Skip. F2 renames, Delete moves to the Trash, Alt+Enter shows properties.
+- **Right-click** a file, a folder, several files or the empty space for the menu: open, play, cut, copy, paste, rename, download (folders as .zip), pin, open in terminal, new folder or file, select all or invert, properties, and more.
 - **Places and pins:** Home, the folder of the terminal on screen, and the whole computer. Pin any folder or file with ☆ or the right-click menu; pins are saved on the server, per user.
-- **Preview:** click a file. Text shows with line numbers (the first 1 MB), images are shown, and binary files offer a download. Drag the bar on the preview's left edge to make it wider or narrower (arrow keys on the bar work too; double-click resets); the width is remembered, and the list gives up its Modified and Size columns before it gets too narrow to read names.
+- **Preview:** click a file. Text shows with line numbers (the first 1 MB), images are shown, and audio and video **play right in the preview** (seek, pause, full screen; Space pauses; moving with the arrow keys shows the next file without starting it). Formats the browser cannot play offer a download. Binary files offer a download. The list gives up its Modified and Size columns before it gets too narrow to read names.
 - **Upload:** drop files or whole folders on the list (they go into the folder shown) or on a folder row, a pin or a path segment (they go there). The ⇪ buttons pick files or a folder. If something already exists you choose: replace, keep both, or skip.
-- **Right-click:** download (folders as .zip), copy the path, open a terminal tab in that folder, pin, rename, and move to the Trash. Delete also moves to the Trash; in places without one (such as /tmp) it asks before deleting for good.
 
 Everything runs as the server's user, so the file browser can reach exactly what that user's shell can.
 

@@ -17,6 +17,8 @@ const Files = (() => {
     pins: [], pinsLoaded: false, info: null,
     previewToken: 0, previewPath: null, wrap: storage('wt.fbWrap') === '1',
     upload: null, typeahead: '', typeaheadAt: 0, loading: 0,
+    clip: null,  // { op: 'copy' | 'cut', paths } the files copied or cut inside the browser
+    drag: null,  // { dir, names } while rows are being dragged
   };
   const el = {};
 
@@ -74,6 +76,14 @@ const Files = (() => {
     return d.toLocaleDateString([], sameYear ? { month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric' });
   }
 
+  // What the browser can play (the server serves these inline, see lib/files.js).
+  const AUDIO_EXT = new Set(['mp3', 'wav', 'ogg', 'oga', 'opus', 'm4a', 'aac', 'flac', 'weba']);
+  const VIDEO_EXT = new Set(['mp4', 'm4v', 'webm', 'ogv', 'mov', 'mkv']);
+  function mediaKind(e) {
+    const x = extOf(e.name);
+    return AUDIO_EXT.has(x) ? 'audio' : VIDEO_EXT.has(x) ? 'video' : null;
+  }
+
   function kindOf(e) {
     if (e.type === 'dir') return 'dir';
     if (e.type === 'broken') return 'broken';
@@ -85,7 +95,8 @@ const Files = (() => {
       'sh', 'bash', 'zsh', 'fish', 'lua', 'swift', 'sql', 'html', 'css', 'scss', 'vue', 'svelte', 'json', 'jsonl', 'yaml',
       'yml', 'toml', 'ini', 'xml', 'proto', 'tf', 'dockerfile', 'makefile', 'r', 'ipynb'].includes(x)) return 'code';
     if (['md', 'txt', 'log', 'csv', 'tsv', 'rst', 'env', 'conf', 'cfg', 'lock'].includes(x) || !x) return 'text';
-    if (['mp4', 'mov', 'mkv', 'webm', 'avi', 'mp3', 'wav', 'flac', 'ogg', 'm4a'].includes(x)) return 'media';
+    if (mediaKind(e)) return 'media';
+    if (['avi', 'wma', 'wmv', 'flv', 'mpg', 'mpeg'].includes(x)) return 'media';
     return 'file';
   }
 
@@ -210,6 +221,8 @@ const Files = (() => {
       </header>
       <div class="files-body">
         <nav class="files-places" aria-label="Places"></nav>
+        <div class="files-resizer files-pl-resizer" role="separator" aria-orientation="vertical" aria-label="Resize places"
+             tabindex="0" title="Drag to resize · double-click to reset"></div>
         <div class="files-main">
           <div class="files-toolbar">
             <input class="files-filter" type="search" placeholder="Filter this folder" aria-label="Filter this folder" spellcheck="false" autocomplete="off">
@@ -225,7 +238,7 @@ const Files = (() => {
           <div class="files-empty" hidden></div>
           <div class="files-drop" hidden><div class="files-drop-box">Drop to upload into <b></b></div></div>
         </div>
-        <div class="files-pv-resizer" role="separator" aria-orientation="vertical" aria-label="Resize preview"
+        <div class="files-resizer files-pv-resizer" role="separator" aria-orientation="vertical" aria-label="Resize preview"
              tabindex="0" title="Drag to resize · double-click to reset"></div>
         <aside class="files-preview" hidden aria-label="Preview"></aside>
       </div>
@@ -248,7 +261,7 @@ const Files = (() => {
       inputFiles: q('.files-input-files'), inputDir: q('.files-input-dir'), pinBtn: q('[data-act="pin"]'),
     });
     el.hidden.checked = fb.showHidden;
-    setupPreviewResizer(root.querySelector('.files-pv-resizer'));
+    setupResizers();
 
     root.addEventListener('click', (e) => {
       const b = e.target.closest('[data-act]');
@@ -281,6 +294,7 @@ const Files = (() => {
       showMenu(e.clientX, e.clientY, row ? selectionMenu() : backgroundMenu());
     });
     el.list.addEventListener('mousedown', (e) => { if (e.target === el.list && e.button === 0) clearSelection(); });
+    el.list.addEventListener('pointerdown', onListPointerDown);
     el.inputFiles.addEventListener('change', () => { uploadFromInput(el.inputFiles); });
     el.inputDir.addEventListener('change', () => { uploadFromInput(el.inputDir); });
     root.addEventListener('keydown', onPanelKey);
@@ -544,7 +558,10 @@ const Files = (() => {
       row.className = 'frow';
       row.setAttribute('role', 'option');
       row.dataset.name = e.name;
-      row.draggable = false;
+      row.draggable = false; // made draggable while the pointer is on the icon or name (see onListPointerDown)
+      row.addEventListener('dragstart', (ev) => onRowDragStart(ev, e));
+      row.addEventListener('dragend', onRowDragEnd);
+      if (fb.clip && fb.clip.op === 'cut' && fb.clip.paths.includes(join(fb.path, e.name))) row.classList.add('cut');
       if (fb.sel.has(e.name)) { row.classList.add('sel'); row.setAttribute('aria-selected', 'true'); }
       if (e.name === fb.cursor) row.classList.add('cursor');
       if (isHidden(e.name)) row.classList.add('hidden-file');
@@ -626,7 +643,7 @@ const Files = (() => {
     paintSelection();
     scrollToName(name);
     const e = fb.shown.find((x) => x.name === name);
-    if (preview && e && e.type !== 'dir' && !el.preview.hidden) showPreview(e);
+    if (preview && e && e.type !== 'dir' && !el.preview.hidden) showPreview(e, { play: false });
   }
 
   function onRowClick(ev, e) {
@@ -678,6 +695,234 @@ const Files = (() => {
     }
   }
 
+  // ---------------------------------------------------------------- rectangle selection
+
+  // Press on empty space (or on a row's size/date cells) and drag to select
+  // everything the rectangle touches; Ctrl or Shift adds to the selection.
+  // Pressing on an icon or a name instead starts dragging those files.
+  function onListPointerDown(e) {
+    if (e.button !== 0 || e.pointerType === 'touch') return;
+    const row = e.target.closest('.frow');
+    if (row && e.target.closest('.fname, .ficon')) {
+      row.draggable = true; // drag the file(s)
+      const off = () => { row.draggable = false; };
+      document.addEventListener('pointerup', off, { once: true, capture: true });
+      document.addEventListener('dragend', off, { once: true, capture: true });
+      return;
+    }
+    if (row && fb.sel.has(row.dataset.name)) return; // a plain click on a selected row
+    const list = el.list;
+    const toContent = (ev) => {
+      const r = list.getBoundingClientRect();
+      return { x: ev.clientX - r.left + list.scrollLeft, y: ev.clientY - r.top + list.scrollTop };
+    };
+    const start = toContent(e);
+    const additive = e.ctrlKey || e.metaKey || e.shiftKey;
+    const base = additive ? new Set(fb.sel) : new Set();
+    let band = null;
+    let last = { clientX: e.clientX, clientY: e.clientY };
+    let timer = 0;
+
+    const update = () => {
+      const now = toContent(last);
+      const x0 = Math.min(start.x, now.x);
+      const x1 = Math.max(start.x, now.x);
+      const y0 = Math.min(start.y, now.y);
+      const y1 = Math.max(start.y, now.y);
+      band.style.cssText = `left:${x0}px;top:${y0}px;width:${x1 - x0}px;height:${y1 - y0}px`;
+      const sel = new Set(base);
+      let lastHit = null;
+      for (const r of list.children) {
+        if (!r.classList.contains('frow')) continue;
+        if (r.offsetTop + r.offsetHeight > y0 && r.offsetTop < y1 && r.offsetLeft + r.offsetWidth > x0 && r.offsetLeft < x1) {
+          sel.add(r.dataset.name);
+          lastHit = r.dataset.name;
+        }
+      }
+      fb.sel = sel;
+      if (lastHit) fb.anchor = fb.cursor = lastHit;
+      paintSelection();
+    };
+    // Near the top or bottom edge the list scrolls under the rectangle.
+    const tick = () => {
+      const r = list.getBoundingClientRect();
+      const dy = last.clientY < r.top + 24 ? -(r.top + 24 - last.clientY) : last.clientY > r.bottom - 24 ? last.clientY - (r.bottom - 24) : 0;
+      if (dy) { list.scrollTop += Math.max(-24, Math.min(24, dy)); update(); }
+    };
+    const move = (ev) => {
+      last = ev;
+      if (!band) {
+        if (Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY) < 4) return;
+        band = document.createElement('div');
+        band.className = 'files-band';
+        list.append(band);
+        list.setPointerCapture(e.pointerId);
+        list.focus({ preventScroll: true });
+        timer = setInterval(tick, 40);
+        ev.preventDefault();
+      }
+      update();
+    };
+    const end = () => {
+      list.removeEventListener('pointermove', move);
+      list.removeEventListener('pointerup', end);
+      list.removeEventListener('pointercancel', end);
+      clearInterval(timer);
+      if (band) {
+        band.remove();
+        // The click that follows a drag must not clear what was just selected.
+        const swallow = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+        list.addEventListener('click', swallow, { capture: true, once: true });
+        setTimeout(() => list.removeEventListener('click', swallow, true), 0);
+      }
+    };
+    list.addEventListener('pointermove', move);
+    list.addEventListener('pointerup', end);
+    list.addEventListener('pointercancel', end);
+  }
+
+  // ---------------------------------------------------------------- copy, cut, paste, move
+
+  const pathsOfSelection = () => selectedEntries().map((x) => join(fb.path, x.name));
+
+  function copyFiles(op) {
+    const paths = pathsOfSelection();
+    if (!paths.length) return;
+    fb.clip = { op: op === 'cut' ? 'cut' : 'copy', paths };
+    renderList();
+    toast(`${op === 'cut' ? 'Cut' : 'Copied'} ${paths.length === 1 ? baseName(paths[0]) : `${paths.length} items`}. Paste with ${isMac ? '⌘V' : 'Ctrl+V'}.`, 2200);
+  }
+
+  async function paste(into = fb.path) {
+    if (!fb.clip || !fb.clip.paths.length) { toast('Nothing to paste. Copy or cut some files first.', 2000); return; }
+    const { op, paths } = fb.clip;
+    const done = await transfer(op === 'cut' ? 'move' : 'copy', paths, into);
+    if (done && op === 'cut') fb.clip = null;
+    if (done) renderList();
+  }
+
+  // Copy or move paths into `to`. Asks once about names that already exist.
+  async function transfer(op, paths, to) {
+    const verb = op === 'move' ? 'Moved' : 'Copied';
+    try {
+      setLoading(true);
+      let res = await api('POST', '/transfer', { op, paths, to, mode: 'fail' });
+      let doneList = res.done;
+      let failed = res.failed;
+      if (res.conflicts.length) {
+        const { button } = await dialog({
+          title: `${res.conflicts.length === 1 ? 'An item already exists' : `${res.conflicts.length} items already exist`} in ${baseName(to) || '/'}`,
+          list: res.conflicts,
+          buttons: [
+            { label: 'Cancel', value: 'cancel' },
+            { label: 'Skip them', value: 'skip' },
+            { label: 'Keep both', value: 'rename' },
+            { label: 'Replace', value: 'replace', danger: true },
+          ],
+        });
+        if (button === 'rename' || button === 'replace') {
+          const again = paths.filter((p) => res.conflicts.includes(baseName(p)));
+          const r2 = await api('POST', '/transfer', { op, paths: again, to, mode: button });
+          doneList = doneList.concat(r2.done);
+          failed = failed.concat(r2.failed);
+        } else if (button !== 'skip') {
+          if (!doneList.length && !failed.length) return false;
+        }
+      }
+      if (failed.length) {
+        await dialog({ title: 'Some items could not be ' + (op === 'move' ? 'moved' : 'copied'), list: failed.map((f) => `${baseName(f.path)}: ${f.error}`), buttons: [{ label: 'OK', value: 'ok', primary: true }] });
+      } else if (doneList.length) {
+        toast(`${verb} ${doneList.length === 1 ? baseName(doneList[0]) : `${doneList.length} items`} to ${tilde(to)}`, 2200);
+      }
+      const mine = doneList.filter((p) => parentOf(p) === fb.path).map(baseName);
+      await go(fb.path, { push: false, select: mine[0] || null });
+      if (mine.length > 1) { fb.sel = new Set(mine); paintSelection(); }
+      return doneList.length > 0;
+    } catch (err) {
+      toast(err.message);
+      return false;
+    } finally {
+      setLoading(false);
+      if (fb.open) el.list.focus({ preventScroll: true });
+    }
+  }
+
+  // Dragging rows onto a folder (in the list, the path bar or Places) moves
+  // them; Ctrl (Option on a Mac) copies.
+  function onRowDragStart(ev, e) {
+    if (!fb.sel.has(e.name)) selectOnly(e.name, { preview: false });
+    const names = [...fb.sel];
+    fb.drag = { dir: fb.path, names, paths: names.map((n) => join(fb.path, n)) };
+    ev.dataTransfer.effectAllowed = 'copyMove';
+    ev.dataTransfer.setData('application/x-wt-files', JSON.stringify(fb.drag.paths));
+    ev.dataTransfer.setData('text/plain', fb.drag.paths.join('\n'));
+    if (names.length > 1) {
+      const g = document.createElement('div');
+      g.className = 'drag-ghost';
+      g.textContent = `${names.length} items`;
+      document.body.append(g);
+      ev.dataTransfer.setDragImage(g, 12, 12);
+      setTimeout(() => g.remove(), 0);
+    }
+  }
+  function onRowDragEnd() {
+    fb.drag = null;
+    el.root.querySelectorAll('.drop-into').forEach((x) => x.classList.remove('drop-into'));
+  }
+  // Whether the dragged rows may go into folder `p`.
+  function canDropHere(p) {
+    const d = fb.drag;
+    if (!d) return false;
+    if (fb.listing && p === fb.path && !fb.listing.writable) return false;
+    // A folder into itself or one of its own subfolders.
+    return !d.paths.some((x) => p === x || p.startsWith(x + '/'));
+  }
+
+  async function newFile() {
+    const { button, value } = await dialog({
+      title: 'New file', message: `In ${tilde(fb.path)}`, input: 'New file.txt', select: [0, 8],
+      buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'Create', value: 'ok', primary: true }],
+    });
+    if (button !== 'ok' || !value) { el.list.focus(); return; }
+    try {
+      await api('POST', '/mkfile', { dir: fb.path, name: value });
+      await go(fb.path, { push: false, select: value, preview: true });
+    } catch (err) { toast(err.message); }
+    el.list.focus();
+  }
+
+  function invertSelection() {
+    fb.sel = new Set(fb.shown.filter((x) => !fb.sel.has(x.name)).map((x) => x.name));
+    paintSelection();
+  }
+
+  function selectAll() {
+    fb.sel = new Set(fb.shown.map((x) => x.name));
+    paintSelection();
+  }
+
+  async function showProperties() {
+    const sel = selectedEntries();
+    let lines;
+    if (sel.length <= 1) {
+      const x = sel[0] || { name: baseName(fb.path), type: 'dir', size: 0, mtime: 0, link: false };
+      const p = sel[0] ? join(fb.path, x.name) : fb.path;
+      lines = [
+        `Name:      ${x.name}`,
+        `Type:      ${x.type === 'dir' ? 'Folder' : x.type === 'file' ? (extOf(x.name) ? `${extOf(x.name).toUpperCase()} file` : 'File') : x.type}${x.link ? ' (link)' : ''}`,
+        `Location:  ${tilde(parentOf(p) || '/')}`,
+        ...(x.type === 'file' ? [`Size:      ${fmtSize(x.size)} (${x.size.toLocaleString()} bytes)`] : []),
+        ...(x.mtime ? [`Modified:  ${new Date(x.mtime).toLocaleString()}`] : []),
+        ...(!sel[0] ? [`Contains:  ${fb.listing.entries.length} items`] : []),
+      ];
+    } else {
+      const bytes = sel.filter((x) => x.type === 'file').reduce((a, x) => a + x.size, 0);
+      lines = [`Items:     ${sel.length}`, `Folders:   ${sel.filter((x) => x.type === 'dir').length}`, `Files:     ${sel.filter((x) => x.type !== 'dir').length}`, `Size:      ${fmtSize(bytes)} (files only)`, `Location:  ${tilde(fb.path)}`];
+    }
+    await dialog({ title: 'Properties', list: lines, buttons: [{ label: 'Close', value: 'ok', primary: true }] });
+    el.list.focus();
+  }
+
   // ---------------------------------------------------------------- keyboard
 
   function onListKey(e) {
@@ -691,13 +936,21 @@ const Files = (() => {
     else if (e.key === 'PageUp') moveCursor(-page, e.shiftKey);
     else if (e.key === 'Home') moveCursor(-1e9, e.shiftKey);
     else if (e.key === 'End') moveCursor(1e9, e.shiftKey);
-    else if (e.key === 'Enter' && cur) openEntry(cur);
-    else if (e.key === ' ' && cur && cur.type !== 'dir') showPreview(cur);
+    else if (e.key === 'Enter' && !e.altKey && cur) openEntry(cur);
+    else if (e.key === ' ' && cur && cur.type !== 'dir') {
+      // Space on the file already playing in the preview pauses or resumes it.
+      const m = el.preview.querySelector('audio, video');
+      if (m && fb.previewPath === join(fb.path, cur.name)) { if (m.paused) m.play().catch(() => {}); else m.pause(); } else showPreview(cur);
+    }
     else if (e.key === 'Backspace') up();
     else if (e.key === 'Delete' || (isMac && mod && e.key === 'Backspace')) deleteSelected();
     else if (e.key === 'F2') renameSelected();
-    else if (mod && e.code === 'KeyA') { fb.sel = new Set(fb.shown.map((x) => x.name)); paintSelection(); }
-    else if (mod && e.code === 'KeyC' && fb.sel.size) copyPaths(selectedEntries().map((x) => join(fb.path, x.name)));
+    else if (mod && e.code === 'KeyA') selectAll();
+    else if (mod && e.shiftKey && e.code === 'KeyC' && fb.sel.size) copyPaths(pathsOfSelection());
+    else if (mod && e.code === 'KeyC' && fb.sel.size) copyFiles('copy');
+    else if (mod && e.code === 'KeyX' && fb.sel.size) copyFiles('cut');
+    else if (mod && e.code === 'KeyV') paste();
+    else if (e.altKey && e.key === 'Enter') showProperties();
     else if (e.key.length === 1 && !mod && !e.altKey && e.key !== ' ') {
       // Type to jump to a name.
       const now = Date.now();
@@ -727,65 +980,80 @@ const Files = (() => {
 
   // ---------------------------------------------------------------- preview
 
-  // The preview's width: drag the bar on its left edge (or use the arrow keys
-  // on it); double-click resets. Remembered per browser. The file list keeps
-  // at least PV_LEAVE px.
-  const PV_MIN = 240;
-  const PV_LEAVE = 300; // the file list keeps at least this much
-  const pvDefault = () => Math.min(720, Math.round(el.root.querySelector('.files-body').clientWidth * 0.46));
-  const pvMax = () => Math.max(PV_MIN, el.root.querySelector('.files-body').clientWidth - el.places.offsetWidth - PV_LEAVE);
+  // Two draggable bars: between Places and the list, and between the list and
+  // the preview. Each remembers its width in this browser; double-click resets,
+  // arrow keys on a focused bar adjust it. The list always keeps LIST_MIN px.
+  const LIST_MIN = 300;
+  const bodyEl = () => el.root.querySelector('.files-body');
+  const widthOf = (node) => (node && !node.hidden && node.offsetParent ? node.getBoundingClientRect().width : 0);
+  const panes = {};
 
-  function setPreviewWidth(px, { save = false } = {}) {
-    const w = Math.round(Math.max(PV_MIN, Math.min(pvMax(), px)));
-    el.root.style.setProperty('--pv-w', `${w}px`);
-    if (save) storage('wt.fbPreviewW', String(w));
-    return w;
-  }
-  const previewWidth = () => el.preview.getBoundingClientRect().width || pvDefault();
-
-  // The saved width, applied once the panel has a size (not while it is hidden).
-  function applySavedPreviewWidth() {
-    const saved = Number(storage('wt.fbPreviewW'));
-    if (saved > 0) setPreviewWidth(saved); else el.root.style.removeProperty('--pv-w');
-  }
-
-  function setupPreviewResizer(bar) {
+  function makeResizer(bar, { cssVar, key, min, hardMax, grows, target, other, deflt }) {
+    const max = () => Math.max(min, Math.min(hardMax, bodyEl().clientWidth - widthOf(other()) - LIST_MIN));
+    const set = (px, save = false) => {
+      const w = Math.round(Math.max(min, Math.min(max(), px)));
+      el.root.style.setProperty(cssVar, `${w}px`);
+      if (save) storage(key, String(w));
+      return w;
+    };
+    const current = () => widthOf(target()) || deflt();
+    const reset = () => { el.root.style.removeProperty(cssVar); storage(key, ''); };
+    // The saved width, once the panel has a size (not while it is hidden).
+    const applySaved = () => { const w = Number(storage(key)); if (w > 0) set(w); else el.root.style.removeProperty(cssVar); };
     bar.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       e.preventDefault();
       bar.setPointerCapture(e.pointerId);
       const startX = e.clientX;
-      const startW = previewWidth();
-      el.root.classList.add('pv-resizing');
-      const move = (ev) => setPreviewWidth(startW - (ev.clientX - startX)); // the pane grows to the left
+      const startW = current();
+      el.root.classList.add('resizing');
+      const move = (ev) => set(startW + grows * (ev.clientX - startX));
       const end = (ev) => {
         bar.removeEventListener('pointermove', move);
         bar.removeEventListener('pointerup', end);
         bar.removeEventListener('pointercancel', end);
-        el.root.classList.remove('pv-resizing');
-        setPreviewWidth(startW - (ev.clientX - startX), { save: true });
+        el.root.classList.remove('resizing');
+        set(startW + grows * (ev.clientX - startX), true);
       };
       bar.addEventListener('pointermove', move);
       bar.addEventListener('pointerup', end);
       bar.addEventListener('pointercancel', end);
     });
-    bar.addEventListener('dblclick', () => {
-      el.root.style.removeProperty('--pv-w');
-      storage('wt.fbPreviewW', '');
-    });
+    bar.addEventListener('dblclick', reset);
     bar.addEventListener('keydown', (e) => {
       const step = e.shiftKey ? 64 : 16;
-      if (e.key === 'ArrowLeft') setPreviewWidth(previewWidth() + step, { save: true });
-      else if (e.key === 'ArrowRight') setPreviewWidth(previewWidth() - step, { save: true });
-      else if (e.key === 'Home') { el.root.style.removeProperty('--pv-w'); storage('wt.fbPreviewW', ''); }
+      if (e.key === 'ArrowRight') set(current() + grows * step, true);
+      else if (e.key === 'ArrowLeft') set(current() - grows * step, true);
+      else if (e.key === 'Home') reset();
       else return;
       e.preventDefault();
     });
-    // A narrower window may no longer fit the saved width: clamp, keeping the saved value.
-    window.addEventListener('resize', () => { if (fb.open && !el.preview.hidden) applySavedPreviewWidth(); });
+    return { applySaved };
+  }
+
+  function setupResizers() {
+    panes.places = makeResizer(el.root.querySelector('.files-pl-resizer'), {
+      cssVar: '--pl-w', key: 'wt.fbPlacesW', min: 120, hardMax: 420, grows: 1,
+      target: () => el.places, other: () => el.preview, deflt: () => 190,
+    });
+    panes.preview = makeResizer(el.root.querySelector('.files-pv-resizer'), {
+      cssVar: '--pv-w', key: 'wt.fbPreviewW', min: 240, hardMax: 1600, grows: -1,
+      target: () => el.preview, other: () => el.places, deflt: () => Math.min(720, Math.round(bodyEl().clientWidth * 0.46)),
+    });
+    // A narrower window may no longer fit a saved width: clamp, keeping the saved value.
+    window.addEventListener('resize', () => { if (fb.open) { panes.places.applySaved(); if (!el.preview.hidden) panes.preview.applySaved(); } });
+  }
+
+  // A removed <audio>/<video> can keep playing until it is collected: stop it.
+  function stopMedia() {
+    if (!el.preview) return;
+    for (const m of el.preview.querySelectorAll('audio, video')) {
+      try { m.pause(); m.removeAttribute('src'); m.load(); } catch { /* already gone */ }
+    }
   }
 
   function closePreview() {
+    stopMedia();
     fb.previewToken++;
     fb.previewPath = null;
     if (!el.preview) return;
@@ -794,13 +1062,15 @@ const Files = (() => {
     el.root.classList.remove('previewing');
   }
 
-  async function showPreview(e) {
+  // play: start audio/video right away (a click or Enter); false when arrowing past files.
+  async function showPreview(e, { play = true } = {}) {
+    stopMedia();
     const token = ++fb.previewToken;
     const p = join(fb.path, e.name);
     fb.previewPath = p;
     el.preview.hidden = false;
     el.root.classList.add('previewing');
-    applySavedPreviewWidth();
+    panes.preview.applySaved();
     el.preview.textContent = '';
 
     const head = document.createElement('div');
@@ -847,6 +1117,34 @@ const Files = (() => {
       img.src = `/api/files/raw?inline=1&path=${enc(p)}`;
       img.onerror = () => { body.textContent = 'This image could not be shown.'; };
       body.append(img);
+      return;
+    }
+    const media = mediaKind(e);
+    if (media) {
+      const m = document.createElement(media);
+      m.className = `pv-${media}`;
+      m.controls = true;
+      m.preload = 'metadata';
+      m.playsInline = true;
+      m.autoplay = play;
+      m.src = `/api/files/raw?inline=1&path=${enc(p)}`;
+      const note = document.createElement('div');
+      note.className = 'pv-note';
+      note.hidden = true;
+      m.onerror = () => {
+        note.hidden = false;
+        note.textContent = `This browser can't play ${extOf(e.name).toUpperCase()} files like this one. Download it to open it.`;
+        m.hidden = true;
+      };
+      if (media === 'audio') {
+        const stage = document.createElement('div');
+        stage.className = 'pv-stage';
+        stage.innerHTML = '<div class="pv-art" aria-hidden="true">♪</div>';
+        stage.append(m, note);
+        body.append(stage);
+      } else {
+        body.append(m, note);
+      }
       return;
     }
     if (e.size === 0) { body.innerHTML = '<div class="pv-note">Empty file.</div>'; return; }
@@ -1104,40 +1402,58 @@ const Files = (() => {
 
   function selectionMenu() {
     const sel = selectedEntries();
-    const paths = sel.map((x) => join(fb.path, x.name));
+    const paths = pathsOfSelection();
     const ro = fb.listing && !fb.listing.writable;
+    const cutCopy = [
+      { label: 'Cut', hint: `${mk}X`, disabled: ro, action: () => copyFiles('cut') },
+      { label: 'Copy', hint: `${mk}C`, action: () => copyFiles('copy') },
+    ];
     if (sel.length > 1) {
       return [
+        ...cutCopy,
+        { label: 'Copy paths', hint: `${mk}⇧C`, action: () => copyPaths(paths) },
         { label: `Download ${sel.length} items`, action: () => download(sel.map((x, i) => ({ path: paths[i], dir: x.type === 'dir' }))) },
-        { label: 'Copy paths', hint: `${mk}C`, action: () => copyPaths(paths) },
         { sep: true },
         { label: `Move ${sel.length} items to the Trash…`, hint: 'Del', danger: true, disabled: ro, action: deleteSelected },
+        { sep: true },
+        { label: 'Properties', hint: 'Alt+Enter', action: showProperties },
       ];
     }
     const e = sel[0];
     const p = paths[0];
     const pinned = fb.pins.some((q) => q.path === p);
+    const common = [
+      { sep: true },
+      { label: 'Rename…', hint: 'F2', disabled: ro, action: renameSelected },
+      { label: 'Move to the Trash…', hint: 'Del', danger: true, disabled: ro, action: deleteSelected },
+      { sep: true },
+      { label: 'Properties', hint: 'Alt+Enter', action: showProperties },
+    ];
     if (e.type === 'dir') {
       return [
         { label: 'Open', hint: 'Enter', action: () => go(p) },
         { label: 'Open in terminal', action: () => openInTerminal(p) },
-        { label: 'Download as .zip', action: () => download([{ path: p, dir: true }]) },
-        { label: 'Copy path', hint: `${mk}C`, action: () => copyPaths([p]) },
-        { label: pinned ? 'Unpin' : 'Pin', action: () => togglePin(p, 'dir') },
         { sep: true },
-        { label: 'Rename…', hint: 'F2', disabled: ro, action: renameSelected },
-        { label: 'Move to the Trash…', hint: 'Del', danger: true, disabled: ro, action: deleteSelected },
+        ...cutCopy,
+        { label: 'Paste into folder', hint: `${mk}V`, disabled: !fb.clip, action: () => paste(p) },
+        { sep: true },
+        { label: 'Copy path', hint: `${mk}⇧C`, action: () => copyPaths([p]) },
+        { label: 'Download as .zip', action: () => download([{ path: p, dir: true }]) },
+        { label: pinned ? 'Unpin' : 'Pin', action: () => togglePin(p, 'dir') },
+        ...common,
       ];
     }
+    const media = mediaKind(e);
     return [
-      { label: 'Preview', hint: 'Space', action: () => showPreview(e) },
-      { label: 'Download', action: () => download([{ path: p, dir: false }]) },
-      { label: 'Copy path', hint: `${mk}C`, action: () => copyPaths([p]) },
+      { label: media ? (media === 'audio' ? 'Play' : 'Play video') : 'Preview', hint: media ? '' : 'Space', action: () => showPreview(e) },
       { label: 'Open folder in terminal', action: () => openInTerminal(fb.path) },
-      { label: pinned ? 'Unpin' : 'Pin', action: () => togglePin(p, 'file') },
       { sep: true },
-      { label: 'Rename…', hint: 'F2', disabled: ro, action: renameSelected },
-      { label: 'Move to the Trash…', hint: 'Del', danger: true, disabled: ro, action: deleteSelected },
+      ...cutCopy,
+      { sep: true },
+      { label: 'Copy path', hint: `${mk}⇧C`, action: () => copyPaths([p]) },
+      { label: 'Download', action: () => download([{ path: p, dir: false }]) },
+      { label: pinned ? 'Unpin' : 'Pin', action: () => togglePin(p, 'file') },
+      ...common,
     ];
   }
 
@@ -1146,6 +1462,12 @@ const Files = (() => {
     const pinned = fb.pins.some((q) => q.path === fb.path);
     return [
       { label: 'New folder…', disabled: ro, action: newFolder },
+      { label: 'New file…', disabled: ro, action: newFile },
+      { sep: true },
+      { label: 'Paste', hint: `${mk}V`, disabled: ro || !fb.clip, action: () => paste() },
+      { label: 'Select all', hint: `${mk}A`, action: selectAll },
+      { label: 'Invert selection', action: invertSelection },
+      { sep: true },
       { label: 'Upload files…', disabled: ro, action: () => el.inputFiles.click() },
       { label: 'Upload a folder…', disabled: ro, action: () => el.inputDir.click() },
       { sep: true },
@@ -1156,6 +1478,7 @@ const Files = (() => {
       { sep: true },
       { label: fb.showHidden ? 'Hide hidden files' : 'Show hidden files', action: () => { el.hidden.click(); } },
       { label: 'Refresh', hint: 'F5', action: refresh },
+      { label: 'Properties', action: showProperties },
     ];
   }
 
@@ -1349,6 +1672,17 @@ const Files = (() => {
   }
 
   function dirDragOver(e, p, rowEl) {
+    if (fb.drag) {
+      // Files being moved inside the browser (not uploaded from the computer).
+      if (!canDropHere(p)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = (isMac ? e.altKey : e.ctrlKey) ? 'copy' : 'move';
+      if (dropTarget && dropTarget.el && dropTarget.el !== rowEl) dropTarget.el.classList.remove('drop-into');
+      dropTarget = { path: p, el: rowEl };
+      if (rowEl) rowEl.classList.add('drop-into');
+      return;
+    }
     if (!hasFiles(e)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -1357,6 +1691,17 @@ const Files = (() => {
   }
 
   function dirDrop(e, p) {
+    if (fb.drag) {
+      if (!canDropHere(p)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const paths = fb.drag.paths;
+      const op = (isMac ? e.altKey : e.ctrlKey) ? 'copy' : 'move';
+      hideDrop();
+      fb.drag = null;
+      transfer(op, paths, p);
+      return;
+    }
     if (!hasFiles(e)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -1410,6 +1755,7 @@ const Files = (() => {
       try { fb.info = await api('GET', '/info'); } catch { /* defaults */ }
     }
     if (!fb.pinsLoaded) loadPins();
+    panes.places.applySaved();
     if (where) await reveal(where);
     else if (!fb.path) await go(fb.info ? fb.info.home : '~');
     else await refresh();
@@ -1418,6 +1764,7 @@ const Files = (() => {
 
   function close({ keepFocus = false } = {}) {
     if (!fb.open) return;
+    stopMedia();
     fb.open = false;
     hideMenu();
     hideDrop();
