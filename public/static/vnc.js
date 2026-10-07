@@ -19,13 +19,15 @@ const Vnc = (() => {
     ['3840 × 2160  (4K)', 3840, 2160],
   ];
 
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+
   const v = {
     available: false, built: false, open: false, RFB: null, rfb: null, loading: false,
     // Off by default: resizing changes the real desktop for everyone looking at it.
     auto: storage('wt.vncAuto') === '1',
     fit: storage('wt.vncFit') !== '0',
     preset: storage('wt.vncPreset') || '',
-    poll: 0, tries: 0, local: true,
+    poll: 0, tries: 0, local: true, remoteClip: '',
     // Which VNC server: empty = the one on this machine.
     host: '', port: '',
   };
@@ -52,7 +54,8 @@ const Vnc = (() => {
         <label class="tool-check vnc-fitlabel" title="Scale the desktop to fit this panel instead of showing it at its own size"><input type="checkbox" class="vnc-fit"> Scale to fit</label>
         <span class="vnc-spacer"></span>
         <button class="tool-btn" data-v="cad" title="Send Ctrl+Alt+Del to the desktop">Ctrl+Alt+Del</button>
-        <button class="tool-btn" data-v="paste" title="Send the text on your clipboard to the desktop's clipboard">Paste</button>
+        <button class="tool-btn vnc-getclip" data-v="getclip" title="The desktop copied some text: put it on your clipboard" hidden>Copy from desktop</button>
+        <button class="tool-btn" data-v="paste" title="Send the text on your clipboard to the desktop's clipboard (Ctrl+V on the desktop does this by itself)">Paste</button>
         <button class="tool-btn" data-v="full" title="Full screen">⛶</button>
         <button class="tool-btn" data-v="reconnect" title="Connect again">Reconnect</button>
         <button class="icon-btn" data-v="close" title="Close the desktop" aria-label="Close the desktop">✕</button>
@@ -71,6 +74,10 @@ const Vnc = (() => {
     el.port.value = v.port;
     el.target.hidden = !v.targetOk;
     el.target.addEventListener('submit', (e) => { e.preventDefault(); disconnect(); connect(); });
+    // Capture phase on the desktop's container: before noVNC's own handlers on its canvas.
+    el.screen.addEventListener('keydown', onKeyDown, true);
+    el.screen.addEventListener('keyup', onKeyUp, true);
+    document.addEventListener('paste', onPaste, true);
     el.preset.innerHTML = '<option value="">Size…</option>'
       + PRESETS.map(([label, w, h]) => `<option value="${w}x${h}">${label}</option>`).join('')
       + '<option value="custom">Custom…</option>';
@@ -110,6 +117,7 @@ const Vnc = (() => {
       else if (act === 'reconnect') { disconnect(); connect(); }
       else if (act === 'cad') { if (v.rfb) v.rfb.sendCtrlAltDel(); }
       else if (act === 'paste') sendClipboard();
+      else if (act === 'getclip') takeRemoteClipboard();
       else if (act === 'full') { if (document.fullscreenElement) document.exitFullscreen(); else root.requestFullscreen?.(); }
     });
   }
@@ -242,9 +250,15 @@ const Vnc = (() => {
       failure = (e.detail && e.detail.reason ? String(e.detail.reason) : 'the login was refused').replace(/[.\s]+$/, '');
     });
     rfb.addEventListener('clipboard', (e) => {
+      // The desktop copied something. A page may only write the clipboard while
+      // the user is doing something, so when that is refused, a button keeps the text.
       const text = e.detail.text;
       if (!text) return;
-      copyText(text).then((ok) => { if (ok) toast(`Desktop clipboard copied (${text.length} characters)`, 1800); });
+      v.remoteClip = text;
+      copyText(text).then((ok) => {
+        if (ok) { toast(`Desktop clipboard copied (${text.length} characters)`, 1800); showRemoteClip(false); }
+        else showRemoteClip(true);
+      });
     });
   }
 
@@ -323,6 +337,82 @@ const Vnc = (() => {
     }, 500);
   }
   function stopPoll() { clearInterval(v.poll); v.poll = 0; }
+
+  // ---------------------------------------------------------------- clipboard
+
+  function showRemoteClip(on) {
+    const b = el.root.querySelector('.vnc-getclip');
+    if (!b) return;
+    b.hidden = !on;
+    if (on) b.textContent = `Copy from desktop (${v.remoteClip.length})`;
+  }
+  async function takeRemoteClipboard() {
+    if (!v.remoteClip) return;
+    const ok = await copyText(v.remoteClip);
+    toast(ok ? `Copied ${v.remoteClip.length} characters from the desktop` : 'The browser refused to copy. Select and copy the text on the desktop again.', 2200);
+    if (ok) showRemoteClip(false);
+  }
+
+  // This page to the desktop. Without a secure connection the browser will not
+  // let a page read the clipboard, but a paste the user starts delivers its
+  // text in a paste event. So a Ctrl+V on the desktop is held back until that
+  // event arrives; the text goes to the desktop's clipboard, then the V is let
+  // through. (On a Mac, Cmd+V and the other Cmd shortcuts become the Ctrl ones the
+  // desktop expects, and the Cmd key itself stays here.)
+  const MAC_SHORTCUTS = new Set(['c', 'x', 'a', 'z', 'y', 'f', 's', 'v']);
+  const heldUp = new Set(); // key codes whose release must not reach the desktop either
+  let waitingPaste = null;
+
+  function tap(letter, { ctrl = false, shift = false } = {}) {
+    const r = v.rfb;
+    if (!r) return;
+    const code = `Key${letter.toUpperCase()}`;
+    const sym = (shift ? letter.toUpperCase() : letter).charCodeAt(0);
+    if (ctrl) r.sendKey(0xffe3, 'ControlLeft', true);
+    if (shift) r.sendKey(0xffe1, 'ShiftLeft', true);
+    r.sendKey(sym, code, true);
+    r.sendKey(sym, code, false);
+    if (shift) r.sendKey(0xffe1, 'ShiftLeft', false);
+    if (ctrl) r.sendKey(0xffe3, 'ControlLeft', false);
+  }
+
+  function onKeyDown(e) {
+    if (!v.rfb || !v.open) return;
+    if (isMac && e.key === 'Meta') { e.stopPropagation(); e.preventDefault(); return; }
+    const letter = /^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase() : '';
+    const cmd = isMac && e.metaKey && !e.ctrlKey;
+    const ctrl = e.ctrlKey && !e.metaKey;
+    if (!letter || e.altKey || e.repeat) return;
+    if (letter === 'v' && (cmd || ctrl)) {
+      // Not preventDefault: the paste event is the point.
+      e.stopPropagation();
+      heldUp.add(e.code);
+      if (waitingPaste) clearTimeout(waitingPaste.timer);
+      const mine = { cmd, shift: e.shiftKey };
+      mine.timer = setTimeout(() => { if (waitingPaste === mine) { waitingPaste = null; tap('v', { ctrl: cmd, shift: e.shiftKey }); } }, 250);
+      waitingPaste = mine;
+    } else if (cmd && MAC_SHORTCUTS.has(letter)) {
+      e.stopPropagation();
+      e.preventDefault();
+      heldUp.add(e.code);
+      tap(letter, { ctrl: true, shift: e.shiftKey });
+    }
+  }
+  function onKeyUp(e) {
+    if (isMac && e.key === 'Meta') { e.stopPropagation(); e.preventDefault(); return; }
+    if (heldUp.delete(e.code)) e.stopPropagation();
+  }
+  function onPaste(e) {
+    if (!waitingPaste || !v.rfb) return;
+    const w = waitingPaste;
+    waitingPaste = null;
+    clearTimeout(w.timer);
+    e.preventDefault();
+    const text = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
+    if (text) v.rfb.clipboardPasteFrom(text);
+    // Let the desktop take the new clipboard in before the paste key arrives.
+    setTimeout(() => tap('v', { ctrl: w.cmd, shift: w.shift }), text ? 80 : 0);
+  }
 
   async function sendClipboard() {
     if (!v.rfb) return;
