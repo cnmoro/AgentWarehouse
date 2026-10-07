@@ -152,7 +152,10 @@ function connect() {
         $('#who').title = msg.email;
         if (msg.scrollback > 0) state.scrollback = msg.scrollback;
         // Older servers have no file browser: its button stays hidden.
-        if (typeof Files !== 'undefined') Files.setAvailable(Array.isArray(msg.features) && msg.features.includes('files'));
+        if (typeof Files !== 'undefined') {
+          Files.setFeatures(Array.isArray(msg.features) ? msg.features : []);
+          Files.setAvailable(Array.isArray(msg.features) && msg.features.includes('files'));
+        }
         break;
       case 'list': onList(msg.tabs, msg.groups); break;
       case 'snap': onSnapshot(msg); break;

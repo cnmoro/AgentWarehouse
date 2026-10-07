@@ -1405,7 +1405,30 @@ const Files = (() => {
       body.append(img);
       return;
     }
-    if ((ext === 'html' || ext === 'htm' || ext === 'xhtml') && !fb.source) {
+    const isHtml = ext === 'html' || ext === 'htm' || ext === 'xhtml';
+    const viewUrl = '/api/files/view' + p.split('/').map((seg, i) => (i === 0 ? '' : enc(seg))).join('/');
+    if ((isHtml && !fb.source) || ext === 'pdf') {
+      if (!features.has('view')) {
+        // An older server would answer the frame with a 404 that browsers show as "refused to connect".
+        const n = document.createElement('div');
+        n.className = 'pv-note';
+        n.textContent = `Showing ${ext === 'pdf' ? 'PDF files' : 'web pages'} needs a newer version of the server: restart the web terminal to turn it on.`
+          + (isHtml ? ' Meanwhile, "View source" shows the file as text.' : ' Meanwhile, Download opens it on your computer.');
+        body.append(n);
+        return;
+      }
+    }
+    if (ext === 'pdf') {
+      // The browser's own PDF viewer (zoom, pages, search, print). Not sandboxed: it cannot run in one.
+      const frame = document.createElement('iframe');
+      frame.className = 'pv-frame pdf';
+      frame.setAttribute('referrerpolicy', 'no-referrer');
+      frame.title = e.name;
+      frame.src = `${viewUrl}#view=FitH&navpanes=0`;
+      body.append(frame);
+      return;
+    }
+    if (isHtml && !fb.source) {
       // Static: no scripts, see /view in lib/files.js. A white page, as browsers draw one.
       meta.textContent += ' · scripts are off in this preview';
       const frame = document.createElement('iframe');
@@ -1413,7 +1436,7 @@ const Files = (() => {
       frame.setAttribute('sandbox', 'allow-same-origin');
       frame.setAttribute('referrerpolicy', 'no-referrer');
       frame.title = e.name;
-      frame.src = '/api/files/view' + p.split('/').map((seg, i) => (i === 0 ? '' : enc(seg))).join('/');
+      frame.src = viewUrl;
       body.append(frame);
       return;
     }
@@ -2077,6 +2100,10 @@ const Files = (() => {
     if (fb.open) close(); else open();
   }
 
+  // What the server can do (older servers lack some of it: see the hello message).
+  let features = new Set();
+  function setFeatures(list) { features = new Set(list); }
+
   function setAvailable(on) {
     fb.available = on;
     for (const b of document.querySelectorAll('.files-btn')) b.hidden = !on;
@@ -2085,5 +2112,5 @@ const Files = (() => {
 
   for (const b of document.querySelectorAll('.files-btn')) b.addEventListener('click', toggle);
 
-  return { open, close, toggle, setAvailable, isOpen: () => fb.open };
+  return { open, close, toggle, setAvailable, setFeatures, isOpen: () => fb.open };
 })();

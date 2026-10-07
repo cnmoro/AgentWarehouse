@@ -629,3 +629,5 @@ body.resizing #main { pointer-events: none; }
   overflow-wrap: anywhere; max-width: 100%; font-size: 12.5px; line-height: 1.25;
 }
 .v-small .tile-art + .fname { font-size: 12px; }
+
+.pv-frame.pdf { background: #525659; }
