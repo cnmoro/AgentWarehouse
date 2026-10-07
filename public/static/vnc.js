@@ -25,8 +25,11 @@ const Vnc = (() => {
     auto: storage('wt.vncAuto') === '1',
     fit: storage('wt.vncFit') !== '0',
     preset: storage('wt.vncPreset') || '',
-    poll: 0, tries: 0,
+    poll: 0, tries: 0, local: true,
+    // Which VNC server: empty = the one on this machine.
+    host: '', port: '',
   };
+  try { const t = JSON.parse(storage('wt.vncTarget') || '{}'); v.host = String(t.host || ''); v.port = String(t.port || ''); } catch { /* none saved */ }
   const el = {};
 
   function build() {
@@ -36,6 +39,12 @@ const Vnc = (() => {
     root.innerHTML = `
       <header class="vnc-head">
         <div class="vnc-title"><span class="vnc-dot" aria-hidden="true"></span><b>Desktop</b><span class="vnc-status" role="status"></span></div>
+        <form class="vnc-target" title="Which VNC server to show. Leave both empty for the desktop of this machine; a port below 100 is a display number (1 means 5901).">
+          <input class="vnc-host" type="text" placeholder="this machine" aria-label="VNC server address" spellcheck="false" autocomplete="off" size="16">
+          <span aria-hidden="true">:</span>
+          <input class="vnc-port" type="text" inputmode="numeric" placeholder="5901" aria-label="VNC server port" spellcheck="false" autocomplete="off" size="5">
+          <button type="submit" class="tool-btn" title="Connect to this server">Connect</button>
+        </form>
         <label class="vnc-switch" title="While on, the desktop's resolution follows the size of this panel (resize the window, drag the sidebar) as long as you stay connected.">
           <input type="checkbox" class="vnc-auto"><span class="vnc-slider" aria-hidden="true"></span><span>Resize desktop with window</span>
         </label>
@@ -56,7 +65,11 @@ const Vnc = (() => {
     Object.assign(el, {
       root, status: q('.vnc-status'), dot: q('.vnc-dot'), auto: q('.vnc-auto'), preset: q('.vnc-preset'), fit: q('.vnc-fit'),
       fitLabel: q('.vnc-fitlabel'), screen: q('.vnc-screen'), msg: q('.vnc-msg'),
+      host: q('.vnc-host'), port: q('.vnc-port'), target: q('.vnc-target'),
     });
+    el.host.value = v.host;
+    el.port.value = v.port;
+    el.target.addEventListener('submit', (e) => { e.preventDefault(); disconnect(); connect(); });
     el.preset.innerHTML = '<option value="">Size…</option>'
       + PRESETS.map(([label, w, h]) => `<option value="${w}x${h}">${label}</option>`).join('')
       + '<option value="custom">Custom…</option>';
@@ -136,7 +149,25 @@ const Vnc = (() => {
     }
     v.loading = false;
     if (!v.open) return; // closed meanwhile
-    const rfb = new v.RFB(el.screen, `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/vnc`, { shared: true });
+    v.host = el.host.value.trim();
+    v.port = el.port.value.trim();
+    storage('wt.vncTarget', JSON.stringify({ host: v.host, port: v.port }));
+    if ((v.host && !/^[A-Za-z0-9._:-]{1,253}$/.test(v.host)) || (v.port && !/^\d{1,5}$/.test(v.port)) || (v.port && Number(v.port) > 65535)) {
+      setStatus('check the address', 'bad');
+      showMsg('That is not a valid server address. Use a host name or IP address, and a port number (or a display number such as 1).');
+      return;
+    }
+    if (!v.host && !v.port && !v.local) {
+      setStatus('no VNC server here', 'bad');
+      showMsg('There is no VNC server on this machine. Type the address of one above (for example 192.168.1.20 and 5900) and press Connect.');
+      return;
+    }
+    const params = new URLSearchParams();
+    if (v.host) params.set('host', v.host);
+    if (v.port) params.set('port', v.port);
+    const query = params.toString() ? `?${params}` : '';
+    v.shown = v.host || v.port ? `${v.host || 'this machine'}${v.port ? `:${v.port}` : ''}` : '';
+    const rfb = new v.RFB(el.screen, `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/vnc${query}`, { shared: true });
     v.rfb = rfb;
     rfb.background = '#0b0d11';
     rfb.focusOnClick = true;
@@ -168,7 +199,7 @@ const Vnc = (() => {
       if (v.open) {
         showMsg('', (box) => {
           const p = document.createElement('p');
-          p.textContent = failure ? `The desktop did not let us in: ${failure}.`
+          p.textContent = failure ? `${failure}.`
             : e.detail.clean ? 'The desktop connection was closed.' : 'The connection to the desktop was lost.';
           const b = document.createElement('button');
           b.className = 'primary';
@@ -207,7 +238,7 @@ const Vnc = (() => {
     });
     rfb.addEventListener('securityfailure', (e) => {
       // The disconnect that follows shows it, with a Reconnect button.
-      failure = (e.detail && e.detail.reason ? String(e.detail.reason) : 'the login was refused').replace(/^the VNC server( refused the connection)?:?\s*/i, '').replace(/[.\s]+$/, '');
+      failure = (e.detail && e.detail.reason ? String(e.detail.reason) : 'the login was refused').replace(/[.\s]+$/, '');
     });
     rfb.addEventListener('clipboard', (e) => {
       const text = e.detail.text;
@@ -287,7 +318,7 @@ const Vnc = (() => {
     v.poll = setInterval(() => {
       const s = currentSize();
       showCurrentSize();
-      if (s && v.rfb) setStatus(`${s.w} × ${s.h}${v.auto ? ' · follows the window' : ''}`, 'ok');
+      if (s && v.rfb) setStatus(`${v.shown ? `${v.shown} · ` : ''}${s.w} × ${s.h}${v.auto ? ' · follows the window' : ''}`, 'ok');
     }, 500);
   }
   function stopPoll() { clearInterval(v.poll); v.poll = 0; }
@@ -325,6 +356,9 @@ const Vnc = (() => {
     if (typeof focusActive === 'function') focusActive();
   }
 
+  // Whether this machine runs a VNC server of its own (the page offers the button anyway: any server can be typed in).
+  function setLocal(on) { v.local = on; }
+
   function setAvailable(on) {
     v.available = on;
     for (const b of document.querySelectorAll('.vnc-btn')) b.hidden = !on;
@@ -333,5 +367,5 @@ const Vnc = (() => {
 
   for (const b of document.querySelectorAll('.vnc-btn')) b.addEventListener('click', () => (v.open ? close() : open()));
 
-  return { open, close, setAvailable, isOpen: () => v.open };
+  return { open, close, setAvailable, setLocal, isOpen: () => v.open };
 })();

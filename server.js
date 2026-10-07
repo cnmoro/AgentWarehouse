@@ -283,11 +283,16 @@ server.on('upgrade', (req, socket, head) => {
   } catch (err) {
     console.error('upgrade error:', err.message);
   }
-  if (!session || (route === 'vnc' && !vnc.isUp())) {
+  if (!session) {
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
     return socket.destroy();
   }
   if (route === 'vnc') {
+    const target = vnc.parseTarget(req.url);
+    if (!target) {
+      socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+      return socket.destroy();
+    }
     if ((vncOpen.get(session.id) || 0) >= vnc.MAX_PER_SESSION) {
       socket.write('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n');
       return socket.destroy();
@@ -296,8 +301,8 @@ server.on('upgrade', (req, socket, head) => {
       ws.sessionId = session.id;
       vncOpen.set(session.id, (vncOpen.get(session.id) || 0) + 1);
       ws.on('close', () => vncOpen.set(session.id, Math.max(0, (vncOpen.get(session.id) || 1) - 1)));
-      console.log(`[vnc] ${session.email} opened the desktop`);
-      vnc.bridge(ws, session.email);
+      console.log(`[vnc] ${session.email} opened ${target.label}`);
+      vnc.bridge(ws, `${session.email} -> ${target.label}`, target);
     });
   }
   wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws, session));
@@ -394,7 +399,7 @@ function onConnection(ws, session) {
   clients.add(client);
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
-  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, features: ['sessions', 'files', 'view', ...(vnc.isUp() ? ['vnc'] : [])] });
+  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, features: ['sessions', 'files', 'view', 'vnc', ...(vnc.isUp() ? ['vnc-local'] : [])] });
   syncClient(client);
 
   ws.on('message', (raw) => {

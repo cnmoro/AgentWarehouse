@@ -156,7 +156,10 @@ function connect() {
           Files.setFeatures(Array.isArray(msg.features) ? msg.features : []);
           Files.setAvailable(Array.isArray(msg.features) && msg.features.includes('files'));
         }
-        if (typeof Vnc !== 'undefined') Vnc.setAvailable(Array.isArray(msg.features) && msg.features.includes('vnc'));
+        if (typeof Vnc !== 'undefined') {
+          Vnc.setLocal(Array.isArray(msg.features) && msg.features.includes('vnc-local'));
+          Vnc.setAvailable(Array.isArray(msg.features) && (msg.features.includes('vnc') || msg.features.includes('vnc-local')));
+        }
         break;
       case 'list': onList(msg.tabs, msg.groups); break;
       case 'snap': onSnapshot(msg); break;
