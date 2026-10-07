@@ -362,6 +362,19 @@ const Vnc = (() => {
   const MAC_SHORTCUTS = new Set(['c', 'x', 'a', 'z', 'y', 'f', 's', 'v']);
   const heldUp = new Set(); // key codes whose release must not reach the desktop either
   let waitingPaste = null;
+  let pasteBox = null;
+  function focusPasteBox() {
+    if (!pasteBox) {
+      pasteBox = document.createElement('textarea');
+      pasteBox.setAttribute('aria-hidden', 'true');
+      pasteBox.tabIndex = -1;
+      pasteBox.style.cssText = 'position:fixed;left:-100px;top:0;width:10px;height:10px;opacity:0;';
+      el.root.appendChild(pasteBox);
+    }
+    pasteBox.value = '';
+    pasteBox.focus({ preventScroll: true });
+  }
+  function refocusDesktop() { el.screen.querySelector('canvas')?.focus({ preventScroll: true }); }
 
   function tap(letter, { ctrl = false, shift = false } = {}) {
     const r = v.rfb;
@@ -388,8 +401,9 @@ const Vnc = (() => {
       e.stopPropagation();
       heldUp.add(e.code);
       if (waitingPaste) clearTimeout(waitingPaste.timer);
-      const mine = { cmd, shift: e.shiftKey };
-      mine.timer = setTimeout(() => { if (waitingPaste === mine) { waitingPaste = null; tap('v', { ctrl: cmd, shift: e.shiftKey }); } }, 250);
+      const mine = { shift: e.shiftKey };
+      focusPasteBox();
+      mine.timer = setTimeout(() => { if (waitingPaste === mine) { waitingPaste = null; refocusDesktop(); tap('v', { ctrl: true, shift: e.shiftKey }); } }, 250);
       waitingPaste = mine;
     } else if (cmd && MAC_SHORTCUTS.has(letter)) {
       e.stopPropagation();
@@ -411,7 +425,8 @@ const Vnc = (() => {
     const text = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
     if (text) v.rfb.clipboardPasteFrom(text);
     // Let the desktop take the new clipboard in before the paste key arrives.
-    setTimeout(() => tap('v', { ctrl: w.cmd, shift: w.shift }), text ? 80 : 0);
+    refocusDesktop();
+    setTimeout(() => tap('v', { ctrl: true, shift: w.shift }), text ? 80 : 0);
   }
 
   async function sendClipboard() {
