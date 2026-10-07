@@ -17,6 +17,7 @@ const Files = (() => {
     pins: [], pinsLoaded: false, info: null,
     previewToken: 0, previewPath: null, wrap: storage('wt.fbWrap') === '1',
     upload: null, typeahead: '', typeaheadAt: 0, loading: 0,
+    source: false, // HTML and SVG files: show the text instead of the page
     clip: null,  // { op: 'copy' | 'cut', paths } the files copied or cut inside the browser
     drag: null,  // { dir, names } while rows are being dragged
   };
@@ -1110,13 +1111,34 @@ const Files = (() => {
     el.preview.append(head, body);
 
     const kind = kindOf(e);
-    if (kind === 'image') {
+    const ext = extOf(e.name);
+    // HTML and SVG can be shown or read as source.
+    const canSource = ext === 'html' || ext === 'htm' || ext === 'xhtml' || ext === 'svg';
+    if (canSource) {
+      const b = act(fb.source ? 'Show it' : 'View source', () => { fb.source = !fb.source; showPreview(e, { play }); });
+      b.title = fb.source ? 'Show the rendered page' : 'Show the file as text';
+    }
+    if (kind === 'image' && !(canSource && fb.source)) {
       const img = document.createElement('img');
       img.className = 'pv-image';
       img.alt = e.name;
       img.src = `/api/files/raw?inline=1&path=${enc(p)}`;
       img.onerror = () => { body.textContent = 'This image could not be shown.'; };
+      img.title = 'Click to zoom between fit and actual size';
+      img.onclick = () => img.classList.toggle('actual');
       body.append(img);
+      return;
+    }
+    if ((ext === 'html' || ext === 'htm' || ext === 'xhtml') && !fb.source) {
+      // Static: no scripts, see /view in lib/files.js. A white page, as browsers draw one.
+      meta.textContent += ' · scripts are off in this preview';
+      const frame = document.createElement('iframe');
+      frame.className = 'pv-frame';
+      frame.setAttribute('sandbox', 'allow-same-origin');
+      frame.setAttribute('referrerpolicy', 'no-referrer');
+      frame.title = e.name;
+      frame.src = '/api/files/view' + p.split('/').map((seg, i) => (i === 0 ? '' : enc(seg))).join('/');
+      body.append(frame);
       return;
     }
     const media = mediaKind(e);
