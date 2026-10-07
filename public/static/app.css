@@ -346,7 +346,7 @@ body.resizing #main { pointer-events: none; }
 .place:hover .place-unpin { visibility: visible; }
 .place-unpin:hover { background: var(--line); color: var(--err); }
 
-.files-main { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; container-type: inline-size; }
+.files-main { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .files-toolbar { flex: none; display: flex; align-items: center; gap: 6px; padding: 8px 10px; flex-wrap: wrap; }
 .files-filter {
   flex: 1 1 160px; min-width: 120px; max-width: 320px; height: 28px; padding: 0 9px;
@@ -362,18 +362,28 @@ body.resizing #main { pointer-events: none; }
 .tool-check { display: flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--muted); cursor: pointer; user-select: none; }
 .tool-check input { accent-color: var(--accent); }
 
-.files-cols, .frow { display: grid; grid-template-columns: minmax(0, 1fr) 90px 150px; align-items: center; }
-.files-cols { flex: none; padding: 0 10px 0 40px; border-bottom: 1px solid var(--line); }
-.files-cols button {
-  border: 0; background: transparent; color: var(--muted); text-align: left; padding: 5px 4px;
-  font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; cursor: pointer;
+/* The table: header and rows share one column template (--cols, set from files.js), and
+   scroll sideways together when the columns are wider than the list. */
+.files-table { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-x: auto; overflow-y: hidden; }
+.files-main[data-view="details"] .files-cols, .files-main[data-view="details"] .files-list { min-width: var(--table-w, 0); }
+.files-main:not([data-view="details"]) .files-cols { display: none; }
+.files-cols { flex: none; display: grid; grid-template-columns: var(--cols); column-gap: 6px; align-items: stretch; padding: 0 18px 0 14px; border-bottom: 1px solid var(--line); }
+.colh { position: relative; min-width: 0; }
+.colh button {
+  display: block; width: 100%; border: 0; background: transparent; color: var(--muted); text-align: left; padding: 5px 4px;
+  font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.files-cols button:nth-child(2) { text-align: right; padding-right: 14px; }
-.files-cols button.on { color: var(--text); }
-.files-cols button.on::after { content: " " attr(data-dir); font-size: 9px; }
-.files-list { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 6px 24px; outline: none; }
+.colh.right button { text-align: right; padding-right: 14px; }
+.colh button:hover { color: var(--text); }
+.colh button.on { color: var(--text); }
+.colh button.on::after { content: " " attr(data-dir); font-size: 9px; }
+.col-grip { position: absolute; top: 3px; bottom: 3px; right: -5px; width: 9px; cursor: col-resize; z-index: 2; touch-action: none; }
+.col-grip::after { content: ""; position: absolute; top: 2px; bottom: 2px; left: 4px; width: 1px; background: var(--line); }
+.col-grip:hover::after, .files.resizing .col-grip:active::after { background: var(--accent); width: 2px; left: 3px; }
+.files-list { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 6px 24px; outline: none; scrollbar-gutter: stable; }
 .frow {
-  grid-template-columns: 24px minmax(0, 1fr) 90px 150px; gap: 0 6px; height: 30px; padding: 0 4px 0 8px;
+  display: grid; grid-template-columns: var(--cols, 24px 1fr); align-items: center;
+  gap: 0 6px; height: 30px; padding: 0 4px 0 8px;
   border-radius: 6px; cursor: default; user-select: none; font-size: 13px;
 }
 .frow:hover { background: var(--panel); }
@@ -382,8 +392,9 @@ body.resizing #main { pointer-events: none; }
 .frow.drop-into { background: rgba(95,179,255,.22); box-shadow: inset 0 0 0 1px var(--accent); }
 .frow.hidden-file .fname { opacity: .65; }
 .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fsize, .ftime { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fsize { text-align: right; padding-right: 10px; font-variant-numeric: tabular-nums; }
+.fcell { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.fcell.c-size { text-align: right; padding-right: 14px; font-variant-numeric: tabular-nums; }
+.fcell.c-mode { font-family: var(--mono); font-size: 11.5px; }
 .ficon { position: relative; width: 18px; height: 18px; display: grid; place-items: center; }
 .ficon svg { width: 18px; height: 18px; }
 .ficon path { fill: #7d8898; }
@@ -507,18 +518,6 @@ body.resizing #main { pointer-events: none; }
 .modal-buttons .danger { background: #5a2321; color: #ffd6d3; border: 1px solid #8a3a36; }
 .modal-buttons .danger:hover, .modal-buttons .danger:focus-visible { background: #6e2a27; outline: none; }
 
-/* A narrow list (a wide preview beside it) drops columns, dates first, so names keep their room. */
-@container (max-width: 560px) {
-  .files-cols { grid-template-columns: minmax(0, 1fr) 80px; }
-  .frow { grid-template-columns: 24px minmax(0, 1fr) 80px; }
-  .ftime, .files-cols button:nth-child(3) { display: none; }
-}
-@container (max-width: 380px) {
-  .files-cols { grid-template-columns: minmax(0, 1fr); }
-  .frow { grid-template-columns: 24px minmax(0, 1fr); }
-  .fsize, .files-cols button:nth-child(2) { display: none; }
-}
-
 @media (max-width: 900px) {
   .files-places { width: var(--pl-w, 150px); }
   .files-preview { position: absolute; inset: 0; z-index: 5; width: auto; min-width: 0; border-left: 0; }
@@ -526,9 +525,6 @@ body.resizing #main { pointer-events: none; }
 }
 @media (max-width: 700px) {
   .files-places, .files-pl-resizer { display: none; }
-  .files-cols, .frow { grid-template-columns: minmax(0, 1fr) 70px; }
-  .frow { grid-template-columns: 24px minmax(0, 1fr) 70px; }
-  .ftime, .files-cols button:nth-child(3) { display: none; }
   .files-toolbar .tool-btn { padding: 0 8px; }
 }
 
@@ -592,3 +588,44 @@ body.resizing #main { pointer-events: none; }
 .pv-image { cursor: zoom-in; }
 .pv-image.actual { max-width: none; max-height: none; margin: 16px; cursor: zoom-out; }
 .pv-frame { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+
+/* ---------- view modes ---------- */
+.view-switch { margin-left: auto; display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.view-switch button {
+  width: 30px; height: 26px; display: grid; place-items: center; border: 0; background: var(--panel-2); color: var(--muted);
+  cursor: pointer; padding: 0;
+}
+.view-switch button + button { border-left: 1px solid var(--line); }
+.view-switch button:hover { color: var(--text); }
+.view-switch button[aria-pressed="true"] { background: #1d3550; color: var(--accent); }
+.view-switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* List: names only, flowing top to bottom in columns. */
+.files-list.v-list {
+  display: grid; grid-auto-flow: column; grid-template-rows: repeat(var(--rows, 10), 28px); grid-auto-columns: 240px;
+  align-content: start; gap: 0; overflow: auto; padding-bottom: 8px;
+}
+.files-list.v-list .frow { grid-template-columns: 24px minmax(0, 1fr); height: 28px; }
+
+/* Small and large icons: tiles with the name below; images and videos show a thumbnail. */
+.files-list.v-small, .files-list.v-large { display: grid; align-content: start; gap: 4px; padding: 8px; }
+.files-list.v-small { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); }
+.files-list.v-large { grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 8px; }
+.files-list.v-small .frow, .files-list.v-large .frow {
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-start; height: auto; padding: 8px 4px 6px; gap: 6px;
+  text-align: center;
+}
+.tile-art { position: relative; display: grid; place-items: center; width: 44px; height: 44px; flex: none; }
+.v-large .tile-art { width: 112px; height: 96px; }
+.tile-art .ficon { width: 100%; height: 100%; }
+.tile-art .ficon svg { width: 70%; height: 70%; }
+.v-large .tile-art .ficon svg { width: 62%; height: 62%; }
+.tile-art .thumb {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; border-radius: 4px; background: var(--panel);
+}
+.v-small .tile-art .thumb { border-radius: 3px; }
+.files-list.v-small .fname, .files-list.v-large .fname {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; overflow: hidden;
+  overflow-wrap: anywhere; max-width: 100%; font-size: 12.5px; line-height: 1.25;
+}
+.v-small .tile-art + .fname { font-size: 12px; }

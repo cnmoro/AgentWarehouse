@@ -17,6 +17,9 @@ const Files = (() => {
     pins: [], pinsLoaded: false, info: null,
     previewToken: 0, previewPath: null, wrap: storage('wt.fbWrap') === '1',
     upload: null, typeahead: '', typeaheadAt: 0, loading: 0,
+    view: ['details', 'list', 'small', 'large'].includes(storage('wt.fbView')) ? storage('wt.fbView') : 'details',
+    cols: (() => { try { const c = JSON.parse(storage('wt.fbCols') || '{}'); return { vis: Array.isArray(c.vis) ? c.vis : null, w: c.w && typeof c.w === 'object' ? c.w : {} }; } catch { return { vis: null, w: {} }; } })(),
+    colSig: '',
     source: false, // HTML and SVG files: show the text instead of the page
     clip: null,  // { op: 'copy' | 'cut', paths } the files copied or cut inside the browser
     drag: null,  // { dir, names } while rows are being dragged
@@ -201,6 +204,205 @@ const Files = (() => {
 
   // ---------------------------------------------------------------- building
 
+  // ---------------------------------------------------------------- views and columns
+
+  const svgIcon = (d) => `<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="${d}"/></svg>`;
+  const VIEWS = [
+    { id: 'details', label: 'Details', d: 'M2 4h2v2H2zm4 0h12v2H6zM2 9h2v2H2zm4 0h12v2H6zM2 14h2v2H2zm4 0h12v2H6z' },
+    { id: 'list', label: 'List', d: 'M2 4h5v2H2zm0 5h5v2H2zm0 5h5v2H2zM9 4h5v2H9zm0 5h5v2H9zm0 5h5v2H9zM16 4h2v2h-2z' },
+    { id: 'small', label: 'Small icons', d: 'M2 3h4v4H2zm6 0h4v4H8zm6 0h4v4h-4zM2 9h4v4H2zm6 0h4v4H8zm6 0h4v4h-4zM2 15h4v3H2zm6 0h4v3H8zm6 0h4v3h-4z' },
+    { id: 'large', label: 'Large icons', d: 'M2 2h7v7H2zm9 0h7v7h-7zM2 11h7v7H2zm9 0h7v7h-7z' },
+  ];
+  const VIEW_BUTTONS = VIEWS.map((v, i) => `<button data-view="${v.id}" title="${v.label} (${isMac ? '⌘' : 'Ctrl'}+Shift+${i + 1})" aria-label="${v.label}" aria-pressed="false">${svgIcon(v.d)}</button>`).join('');
+
+  // Details columns. Name is always there; the others can be switched on and
+  // off (right-click the header), resized (drag a divider; double-click fits
+  // the widest entry) and sorted (click). A tile or list view shows names only.
+  const COLUMNS = [
+    { key: 'name', label: 'Name' },
+    { key: 'size', label: 'Size', w: 90, right: true },
+    { key: 'mtime', label: 'Modified', w: 150 },
+    { key: 'btime', label: 'Created', w: 150 },
+    { key: 'type', label: 'Type', w: 140 },
+    { key: 'ext', label: 'Extension', w: 90 },
+    { key: 'mode', label: 'Permissions', w: 110 },
+    { key: 'owner', label: 'Owner', w: 100 },
+  ];
+  const DEFAULT_VIS = ['size', 'mtime', 'type'];
+  const colDef = (key) => COLUMNS.find((c) => c.key === key);
+  const colWidth = (c) => Math.max(c.key === 'name' ? 100 : 50, Math.min(900, fb.cols.w[c.key] || c.w || 0));
+  const GAP = 6;
+  const NAME_MIN = 160;
+
+  function typeLabel(e) {
+    if (e.type === 'dir') return 'Folder';
+    if (e.type === 'broken') return 'Broken link';
+    if (e.type === 'other') return 'Special file';
+    const ext = extOf(e.name).toUpperCase();
+    const m = mediaKind(e);
+    const k = kindOf(e);
+    const noun = m || (k === 'image' ? 'image' : k === 'archive' ? 'archive' : k === 'code' ? 'source file' : k === 'pdf' ? 'document' : k === 'text' ? 'text file' : 'file');
+    return ext ? `${ext} ${noun}` : 'File';
+  }
+
+  function modeString(mode, type) {
+    if (!mode && type !== 'dir') return '';
+    const t = 'rwxrwxrwx';
+    let out = '';
+    for (let i = 0; i < 9; i++) out += mode & (1 << (8 - i)) ? t[i] : '-';
+    return (type === 'dir' ? 'd' : '-') + out;
+  }
+
+  // What each details column shows for an entry, and what it sorts by.
+  function cellText(key, e) {
+    switch (key) {
+      case 'size': return e.type === 'dir' ? '' : fmtSize(e.size);
+      case 'mtime': return fmtTime(e.mtime);
+      case 'btime': return e.btime ? fmtTime(e.btime) : '—';
+      case 'type': return typeLabel(e);
+      case 'ext': return e.type === 'dir' ? '' : extOf(e.name);
+      case 'mode': return modeString(e.mode, e.type);
+      case 'owner': return e.owner || '';
+      default: return e.name;
+    }
+  }
+  const cellTitle = (key, e) => (key === 'mtime' && e.mtime ? new Date(e.mtime).toLocaleString()
+    : key === 'btime' && e.btime ? new Date(e.btime).toLocaleString()
+      : key === 'size' && e.type === 'file' ? `${e.size.toLocaleString()} bytes` : '');
+
+  const visibleKeys = () => (fb.cols.vis || DEFAULT_VIS).filter((k) => k !== 'name' && colDef(k));
+
+  // The columns shown. When the list is narrow (a wide preview beside it, a
+  // phone) only the ones that fit: those furthest right drop out.
+  function effectiveCols() {
+    const name = colDef('name');
+    if (fb.view !== 'details') return [name];
+    const avail = (el.main && el.main.clientWidth) || 900;
+    // Room enough: every column that was chosen shows (sideways scrolling if they are wider than the list).
+    if (avail >= 700) return [name, ...visibleKeys().map(colDef)];
+    let used = 14 + 24 + GAP + (fb.cols.w.name || NAME_MIN) + 18;
+    const out = [name];
+    for (const k of visibleKeys()) {
+      const c = colDef(k);
+      if (used + colWidth(c) + GAP > avail) break;
+      used += colWidth(c) + GAP;
+      out.push(c);
+    }
+    return out;
+  }
+
+  function applyColumns(cols = effectiveCols()) {
+    const nameW = fb.cols.w.name;
+    const tracks = ['24px', nameW ? `minmax(100px, ${colWidth(colDef('name'))}px)` : `minmax(${NAME_MIN}px, 1fr)`,
+      ...cols.slice(1).map((c) => `${colWidth(c)}px`)];
+    let total = 14 + 24 + GAP + (nameW ? colWidth(colDef('name')) : NAME_MIN) + 18;
+    for (const c of cols.slice(1)) total += colWidth(c) + GAP;
+    el.main.style.setProperty('--cols', tracks.join(' '));
+    el.main.style.setProperty('--table-w', `${total}px`);
+  }
+
+  const saveCols = () => storage('wt.fbCols', JSON.stringify(fb.cols));
+
+  function renderHeader(cols = effectiveCols()) {
+    el.cols.textContent = '';
+    el.cols.append(document.createElement('span')); // above the icons
+    for (const c of cols) {
+      const cell = document.createElement('div');
+      cell.className = `colh${c.right ? ' right' : ''}`;
+      const b = document.createElement('button');
+      b.dataset.sort = c.key;
+      b.textContent = c.label;
+      const on = fb.sort.key === c.key;
+      b.classList.toggle('on', on);
+      b.dataset.dir = on ? (fb.sort.dir > 0 ? '▲' : '▼') : '';
+      const grip = document.createElement('span');
+      grip.className = 'col-grip';
+      grip.dataset.key = c.key;
+      grip.title = 'Drag to resize · double-click to fit';
+      cell.append(b, grip);
+      el.cols.append(cell);
+    }
+    applyColumns(cols);
+  }
+
+  function setColWidth(key, px, save = false) {
+    fb.cols.w[key] = Math.round(Math.max(key === 'name' ? 100 : 50, Math.min(900, px)));
+    applyColumns();
+    if (save) saveCols();
+  }
+
+  // The width that shows the widest entry (and the heading) of a column.
+  function fitColumn(key) {
+    const ctx = document.createElement('canvas').getContext('2d');
+    const base = key === 'name' ? '13px' : '12px';
+    ctx.font = `${base} ${getComputedStyle(document.body).fontFamily}`;
+    let w = ctx.measureText(colDef(key).label).width + 24;
+    for (const e of fb.shown) w = Math.max(w, ctx.measureText(cellText(key, e)).width + (key === 'size' ? 22 : 12));
+    setColWidth(key, Math.ceil(w) + 4, true);
+  }
+
+  function setupColumnHeader() {
+    el.cols.addEventListener('pointerdown', (e) => {
+      const g = e.target.closest('.col-grip');
+      if (!g || e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      g.setPointerCapture(e.pointerId);
+      const key = g.dataset.key;
+      const startX = e.clientX;
+      const startW = g.parentElement.getBoundingClientRect().width;
+      el.root.classList.add('resizing');
+      const move = (ev) => setColWidth(key, startW + ev.clientX - startX);
+      const end = (ev) => {
+        g.removeEventListener('pointermove', move);
+        g.removeEventListener('pointerup', end);
+        g.removeEventListener('pointercancel', end);
+        el.root.classList.remove('resizing');
+        setColWidth(key, startW + ev.clientX - startX, true);
+      };
+      g.addEventListener('pointermove', move);
+      g.addEventListener('pointerup', end);
+      g.addEventListener('pointercancel', end);
+    });
+    el.cols.addEventListener('dblclick', (e) => {
+      const g = e.target.closest('.col-grip');
+      if (g) fitColumn(g.dataset.key);
+    });
+    // Clicking a divider must not sort.
+    el.cols.addEventListener('click', (e) => { if (e.target.closest('.col-grip')) e.stopImmediatePropagation(); }, true);
+    el.cols.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const vis = new Set(visibleKeys());
+      showMenu(e.clientX, e.clientY, [
+        ...COLUMNS.filter((c) => c.key !== 'name').map((c) => ({
+          label: `${vis.has(c.key) ? '✓' : ' '}  ${c.label}`,
+          action: () => toggleColumn(c.key),
+        })),
+        { sep: true },
+        { label: 'Fit all columns', action: () => { for (const c of effectiveCols()) fitColumn(c.key); } },
+        { label: 'Reset columns', action: () => { fb.cols = { vis: null, w: {} }; saveCols(); renderList(); } },
+      ]);
+    });
+  }
+
+  function toggleColumn(key) {
+    const vis = new Set(visibleKeys());
+    if (vis.has(key)) vis.delete(key); else vis.add(key);
+    fb.cols.vis = COLUMNS.filter((c) => vis.has(c.key)).map((c) => c.key); // always in the table's order
+    saveCols();
+    renderList();
+  }
+
+  function setView(v) {
+    if (!VIEWS.some((x) => x.id === v) || v === fb.view) return;
+    fb.view = v;
+    storage('wt.fbView', v);
+    renderList();
+    el.list.focus({ preventScroll: true });
+    const row = fb.cursor && el.list.querySelector(`.frow[data-name="${CSS.escape(fb.cursor)}"]`);
+    if (row) row.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
   function build() {
     if (fb.built) return;
     fb.built = true;
@@ -231,11 +433,12 @@ const Files = (() => {
             <button class="tool-btn" data-act="upload-files" title="Upload files into this folder">⇪ Files</button>
             <button class="tool-btn" data-act="upload-dir" title="Upload a folder into this folder">⇪ Folder</button>
             <label class="tool-check" title="Show hidden files (names starting with a dot)"><input type="checkbox" class="files-hidden"> Hidden</label>
+            <div class="view-switch" role="group" aria-label="View">${VIEW_BUTTONS}</div>
           </div>
-          <div class="files-cols">
-            <button data-sort="name">Name</button><button data-sort="size">Size</button><button data-sort="mtime">Modified</button>
+          <div class="files-table">
+            <div class="files-cols" title="Right-click to choose the columns"></div>
+            <div class="files-list" role="listbox" tabindex="0" aria-multiselectable="true" aria-label="Folder contents"></div>
           </div>
-          <div class="files-list" role="listbox" tabindex="0" aria-multiselectable="true" aria-label="Folder contents"></div>
           <div class="files-empty" hidden></div>
           <div class="files-drop" hidden><div class="files-drop-box">Drop to upload into <b></b></div></div>
         </div>
@@ -256,7 +459,7 @@ const Files = (() => {
     const q = (s) => root.querySelector(s);
     Object.assign(el, {
       root, path: q('.files-path'), places: q('.files-places'), list: q('.files-list'), empty: q('.files-empty'),
-      filter: q('.files-filter'), hidden: q('.files-hidden'), cols: q('.files-cols'), preview: q('.files-preview'),
+      filter: q('.files-filter'), hidden: q('.files-hidden'), cols: q('.files-cols'), table: q('.files-table'), preview: q('.files-preview'),
       count: q('.files-count'), drop: q('.files-drop'), dropName: q('.files-drop b'), main: q('.files-main'),
       progress: q('.files-progress'), progressBar: q('.files-progress-bar div'), progressText: q('.files-progress-text'),
       inputFiles: q('.files-input-files'), inputDir: q('.files-input-dir'), pinBtn: q('[data-act="pin"]'),
@@ -271,7 +474,8 @@ const Files = (() => {
     el.cols.addEventListener('click', (e) => {
       const b = e.target.closest('[data-sort]');
       if (!b) return;
-      fb.sort = fb.sort.key === b.dataset.sort ? { key: b.dataset.sort, dir: -fb.sort.dir } : { key: b.dataset.sort, dir: b.dataset.sort === 'name' ? 1 : -1 };
+      const text = !['size', 'mtime', 'btime', 'mode'].includes(b.dataset.sort);
+      fb.sort = fb.sort.key === b.dataset.sort ? { key: b.dataset.sort, dir: -fb.sort.dir } : { key: b.dataset.sort, dir: text ? 1 : -1 };
       storage('wt.fbSort', JSON.stringify(fb.sort));
       renderList();
     });
@@ -280,6 +484,20 @@ const Files = (() => {
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); el.filter.value = ''; fb.filter = ''; renderList(); el.list.focus(); }
       if (e.key === 'ArrowDown' || e.key === 'Enter') { e.preventDefault(); el.list.focus(); if (!fb.sel.size && fb.shown[0]) selectOnly(fb.shown[0].name); }
     });
+    el.root.querySelector('.view-switch').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-view]');
+      if (b) setView(b.dataset.view);
+    });
+    setupColumnHeader();
+    // The columns that fit, and the list view's rows, follow the size of the list.
+    let rzTimer = 0;
+    new ResizeObserver(() => {
+      clearTimeout(rzTimer);
+      rzTimer = setTimeout(() => {
+        if (!fb.open || !fb.listing) return;
+        if (effectiveCols().map((c) => c.key).join() !== fb.colSig) renderList(); else fitListRows();
+      }, 60);
+    }).observe(el.main);
     el.hidden.addEventListener('change', () => {
       fb.showHidden = el.hidden.checked;
       storage('wt.fbHidden', fb.showHidden ? '1' : '');
@@ -533,26 +751,38 @@ const Files = (() => {
     }
     const { key, dir } = fb.sort;
     const coll = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+    const num = { size: 'size', mtime: 'mtime', btime: 'btime', mode: 'mode' }[key];
     return [...list].sort((a, b) => {
       const da = a.type === 'dir' ? 0 : 1;
       const db = b.type === 'dir' ? 0 : 1;
       if (da !== db) return da - db; // folders first, whatever the order
       let c = 0;
-      if (key === 'size') c = a.size - b.size;
-      else if (key === 'mtime') c = a.mtime - b.mtime;
+      if (num) c = (a[num] || 0) - (b[num] || 0);
+      else if (key !== 'name') c = coll.compare(cellText(key, a), cellText(key, b));
       if (!c) c = coll.compare(a.name, b.name);
       return c * dir;
     });
   }
 
+  const THUMB_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|ico|avif|mp4|m4v|webm|ogv|mov|mkv|avi)$/i;
+
+  // The list view flows top to bottom in columns: as many rows as fit.
+  function fitListRows() {
+    if (fb.view !== 'list') return;
+    el.list.style.setProperty('--rows', String(Math.max(1, Math.floor(((el.list.clientHeight || 300) - 16) / 28))));
+  }
+
   function renderList() {
     if (!fb.listing) return;
     fb.shown = sortedEntries();
-    for (const b of el.cols.querySelectorAll('[data-sort]')) {
-      const on = b.dataset.sort === fb.sort.key;
-      b.classList.toggle('on', on);
-      b.dataset.dir = on ? (fb.sort.dir > 0 ? '▲' : '▼') : '';
-    }
+    const cols = effectiveCols();
+    fb.colSig = cols.map((c) => c.key).join();
+    el.main.dataset.view = fb.view;
+    el.list.className = `files-list v-${fb.view}`;
+    for (const b of el.root.querySelectorAll('.view-switch [data-view]')) b.setAttribute('aria-pressed', String(b.dataset.view === fb.view));
+    if (fb.view === 'details') renderHeader(cols);
+    const tiles = fb.view === 'small' || fb.view === 'large';
+    const thumbs = tiles && fb.info && fb.info.thumbs;
     const frag = document.createDocumentFragment();
     for (const e of fb.shown) {
       const row = document.createElement('div');
@@ -569,15 +799,38 @@ const Files = (() => {
       const name = document.createElement('span');
       name.className = 'fname';
       name.textContent = e.name;
-      if (e.link) name.title = `${e.name} (link)`;
-      const size = document.createElement('span');
-      size.className = 'fsize';
-      size.textContent = e.type === 'dir' ? '' : fmtSize(e.size);
-      const time = document.createElement('span');
-      time.className = 'ftime';
-      time.textContent = fmtTime(e.mtime);
-      if (e.mtime) time.title = new Date(e.mtime).toLocaleString();
-      row.append(icon(e), name, size, time);
+      name.title = e.link ? `${e.name} (link)` : e.name;
+      if (tiles) {
+        const art = document.createElement('span');
+        art.className = 'tile-art';
+        art.append(icon(e));
+        const ext = extOf(e.name);
+        if (e.type === 'file' && (ext === 'svg' || (thumbs && THUMB_EXT_RE.test(e.name)))) {
+          const img = document.createElement('img');
+          img.className = 'thumb';
+          img.loading = 'lazy';
+          img.decoding = 'async';
+          img.draggable = false;
+          img.alt = '';
+          const p = join(fb.path, e.name);
+          img.src = ext === 'svg' ? `/api/files/raw?inline=1&path=${enc(p)}` : `/api/files/thumb?w=${fb.view === 'large' ? 256 : 128}&path=${enc(p)}`;
+          img.onerror = () => img.remove(); // the icon stays
+          art.append(img);
+        }
+        row.append(art, name);
+      } else if (fb.view === 'list') {
+        row.append(icon(e), name);
+      } else {
+        row.append(icon(e), name);
+        for (const c of cols.slice(1)) {
+          const cell = document.createElement('span');
+          cell.className = `fcell c-${c.key}`;
+          cell.textContent = cellText(c.key, e);
+          const t = cellTitle(c.key, e);
+          if (t) cell.title = t;
+          row.append(cell);
+        }
+      }
       row.onclick = (ev) => onRowClick(ev, e);
       row.ondblclick = () => openEntry(e);
       if (e.type === 'dir') {
@@ -589,6 +842,7 @@ const Files = (() => {
     }
     el.list.textContent = '';
     el.list.append(frag);
+    fitListRows();
     const hiddenCount = fb.listing.entries.filter((e) => isHidden(e.name)).length;
     el.empty.hidden = fb.shown.length > 0;
     el.empty.textContent = fb.filter ? `Nothing here matches "${fb.filter}".`
@@ -704,7 +958,7 @@ const Files = (() => {
   function onListPointerDown(e) {
     if (e.button !== 0 || e.pointerType === 'touch') return;
     const row = e.target.closest('.frow');
-    if (row && e.target.closest('.fname, .ficon')) {
+    if (row && e.target.closest('.fname, .ficon, .tile-art')) {
       row.draggable = true; // drag the file(s)
       const off = () => { row.draggable = false; };
       document.addEventListener('pointerup', off, { once: true, capture: true });
@@ -748,7 +1002,8 @@ const Files = (() => {
     const tick = () => {
       const r = list.getBoundingClientRect();
       const dy = last.clientY < r.top + 24 ? -(r.top + 24 - last.clientY) : last.clientY > r.bottom - 24 ? last.clientY - (r.bottom - 24) : 0;
-      if (dy) { list.scrollTop += Math.max(-24, Math.min(24, dy)); update(); }
+      const dx = fb.view === 'list' ? (last.clientX < r.left + 24 ? -(r.left + 24 - last.clientX) : last.clientX > r.right - 24 ? last.clientX - (r.right - 24) : 0) : 0;
+      if (dy || dx) { list.scrollTop += Math.max(-24, Math.min(24, dy)); list.scrollLeft += Math.max(-24, Math.min(24, dx)); update(); }
     };
     const move = (ev) => {
       last = ev;
@@ -926,13 +1181,33 @@ const Files = (() => {
 
   // ---------------------------------------------------------------- keyboard
 
+  // How far one arrow key moves in the current view: down a row in details,
+  // along a row in the tile views (down = a whole row of tiles), along a column in the list.
+  function layoutSteps() {
+    const kids = el.list.querySelectorAll('.frow');
+    const first = kids[0];
+    const rowH = first ? first.offsetHeight : 30;
+    if (!first || fb.view === 'details') return { down: 1, right: 0, rowH };
+    if (fb.view === 'list') {
+      let n = 0;
+      for (const k of kids) { if (k.offsetLeft === first.offsetLeft) n++; else break; }
+      return { down: 1, right: Math.max(1, n), rowH };
+    }
+    let n = 0;
+    for (const k of kids) { if (k.offsetTop === first.offsetTop) n++; else break; }
+    return { down: Math.max(1, n), right: 1, rowH };
+  }
+
   function onListKey(e) {
     const mod = isMac ? e.metaKey : e.ctrlKey;
     const cur = fb.shown.find((x) => x.name === fb.cursor);
-    const page = Math.max(1, Math.floor(el.list.clientHeight / 30) - 1);
-    if (e.key === 'ArrowDown') moveCursor(1, e.shiftKey);
+    const lay = layoutSteps();
+    const page = Math.max(1, Math.floor(el.list.clientHeight / Math.max(20, lay.rowH)) - 1) * Math.max(1, Math.abs(lay.down));
+    if (e.key === 'ArrowDown') moveCursor(lay.down, e.shiftKey);
     else if (e.key === 'ArrowUp' && e.altKey) up();
-    else if (e.key === 'ArrowUp') moveCursor(-1, e.shiftKey);
+    else if (e.key === 'ArrowUp') moveCursor(-lay.down, e.shiftKey);
+    else if (e.key === 'ArrowRight' && lay.right) moveCursor(lay.right, e.shiftKey);
+    else if (e.key === 'ArrowLeft' && lay.right) moveCursor(-lay.right, e.shiftKey);
     else if (e.key === 'PageDown') moveCursor(page, e.shiftKey);
     else if (e.key === 'PageUp') moveCursor(-page, e.shiftKey);
     else if (e.key === 'Home') moveCursor(-1e9, e.shiftKey);
@@ -972,6 +1247,7 @@ const Files = (() => {
       if (!el.preview.hidden) { closePreview(); el.list.focus(); return; }
       close();
     } else if (mod && e.shiftKey && e.code === 'KeyF') { e.preventDefault(); close(); }
+    else if (mod && e.shiftKey && /^Digit[1-4]$/.test(e.code)) { e.preventDefault(); setView(VIEWS[Number(e.code.slice(5)) - 1].id); }
     else if (mod && !e.shiftKey && e.code === 'KeyF') { e.preventDefault(); el.filter.focus(); el.filter.select(); }
     else if (mod && e.code === 'KeyL') { e.preventDefault(); editPath(); }
     else if (e.key === 'F5' || (mod && e.code === 'KeyR')) { e.preventDefault(); refresh(); }
@@ -1497,6 +1773,8 @@ const Files = (() => {
       { label: 'Download this folder as .zip', action: () => download([{ path: fb.path, dir: true }]) },
       { label: 'Copy path', action: () => copyPaths([fb.path]) },
       { label: pinned ? 'Unpin this folder' : 'Pin this folder', action: () => togglePin(fb.path, 'dir') },
+      { sep: true },
+      ...VIEWS.map((v, i) => ({ label: `${fb.view === v.id ? '✓' : '\u2003'}  View: ${v.label}`, hint: `${mk}⇧${i + 1}`, action: () => setView(v.id) })),
       { sep: true },
       { label: fb.showHidden ? 'Hide hidden files' : 'Show hidden files', action: () => { el.hidden.click(); } },
       { label: 'Refresh', hint: 'F5', action: refresh },
