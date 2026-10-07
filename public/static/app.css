@@ -687,3 +687,4 @@ body.resizing #main { pointer-events: none; }
 .vnc-target input::placeholder { color: #566171; font-family: var(--sans); }
 .vnc-host { width: 150px; }
 .vnc-port { width: 58px; }
+.vnc-target[hidden] { display: none; }

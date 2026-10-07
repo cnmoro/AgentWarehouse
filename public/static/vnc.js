@@ -69,6 +69,7 @@ const Vnc = (() => {
     });
     el.host.value = v.host;
     el.port.value = v.port;
+    el.target.hidden = !v.targetOk;
     el.target.addEventListener('submit', (e) => { e.preventDefault(); disconnect(); connect(); });
     el.preset.innerHTML = '<option value="">Size…</option>'
       + PRESETS.map(([label, w, h]) => `<option value="${w}x${h}">${label}</option>`).join('')
@@ -149,9 +150,9 @@ const Vnc = (() => {
     }
     v.loading = false;
     if (!v.open) return; // closed meanwhile
-    v.host = el.host.value.trim();
-    v.port = el.port.value.trim();
-    storage('wt.vncTarget', JSON.stringify({ host: v.host, port: v.port }));
+    v.host = v.targetOk ? el.host.value.trim() : '';
+    v.port = v.targetOk ? el.port.value.trim() : '';
+    if (v.targetOk) storage('wt.vncTarget', JSON.stringify({ host: v.host, port: v.port }));
     if ((v.host && !/^[A-Za-z0-9._:-]{1,253}$/.test(v.host)) || (v.port && !/^\d{1,5}$/.test(v.port)) || (v.port && Number(v.port) > 65535)) {
       setStatus('check the address', 'bad');
       showMsg('That is not a valid server address. Use a host name or IP address, and a port number (or a display number such as 1).');
@@ -358,6 +359,11 @@ const Vnc = (() => {
 
   // Whether this machine runs a VNC server of its own (the page offers the button anyway: any server can be typed in).
   function setLocal(on) { v.local = on; }
+  // Older servers ignore the host and port; their page does not offer them.
+  function setTargetSupport(on) {
+    v.targetOk = on;
+    if (el.target) el.target.hidden = !on;
+  }
 
   function setAvailable(on) {
     v.available = on;
@@ -367,5 +373,5 @@ const Vnc = (() => {
 
   for (const b of document.querySelectorAll('.vnc-btn')) b.addEventListener('click', () => (v.open ? close() : open()));
 
-  return { open, close, setAvailable, setLocal, isOpen: () => v.open };
+  return { open, close, setAvailable, setLocal, setTargetSupport, isOpen: () => v.open };
 })();

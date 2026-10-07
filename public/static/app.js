@@ -158,6 +158,7 @@ function connect() {
         }
         if (typeof Vnc !== 'undefined') {
           Vnc.setLocal(Array.isArray(msg.features) && msg.features.includes('vnc-local'));
+          Vnc.setTargetSupport(Array.isArray(msg.features) && msg.features.includes('vnc-target'));
           Vnc.setAvailable(Array.isArray(msg.features) && (msg.features.includes('vnc') || msg.features.includes('vnc-local')));
         }
         break;

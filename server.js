@@ -399,7 +399,7 @@ function onConnection(ws, session) {
   clients.add(client);
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
-  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, features: ['sessions', 'files', 'view', 'vnc', ...(vnc.isUp() ? ['vnc-local'] : [])] });
+  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, features: ['sessions', 'files', 'view', 'vnc', 'vnc-target', ...(vnc.isUp() ? ['vnc-local'] : [])] });
   syncClient(client);
 
   ws.on('message', (raw) => {
