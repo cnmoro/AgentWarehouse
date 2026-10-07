@@ -159,20 +159,29 @@ const Vnc = (() => {
       }
       startPoll();
     });
+    let failure = ''; // why the server refused us, when it said
     rfb.addEventListener('disconnect', (e) => {
       if (v.rfb !== rfb) return;
       v.rfb = null;
       stopPoll();
-      setStatus(e.detail.clean ? 'disconnected' : 'connection lost', 'bad');
+      setStatus(failure ? 'login refused' : e.detail.clean ? 'disconnected' : 'connection lost', 'bad');
       if (v.open) {
         showMsg('', (box) => {
           const p = document.createElement('p');
-          p.textContent = e.detail.clean ? 'The desktop connection was closed.' : 'The connection to the desktop was lost.';
+          p.textContent = failure ? `The desktop did not let us in: ${failure}.`
+            : e.detail.clean ? 'The desktop connection was closed.' : 'The connection to the desktop was lost.';
           const b = document.createElement('button');
           b.className = 'primary';
           b.textContent = 'Reconnect';
           b.onclick = () => connect();
-          box.append(p, b);
+          box.append(p);
+          if (/too many security failures/i.test(failure)) {
+            const hint = document.createElement('p');
+            hint.className = 'vnc-hint';
+            hint.textContent = 'The VNC server blocks an address for a while after repeated failed logins. Wait a minute or two and reconnect.';
+            box.append(hint);
+          }
+          box.append(b);
         });
       }
     });
@@ -197,8 +206,8 @@ const Vnc = (() => {
       });
     });
     rfb.addEventListener('securityfailure', (e) => {
-      setStatus('login refused', 'bad');
-      showMsg(`The desktop refused the login${e.detail && e.detail.reason ? `: ${e.detail.reason}` : '.'}`);
+      // The disconnect that follows shows it, with a Reconnect button.
+      failure = (e.detail && e.detail.reason ? String(e.detail.reason) : 'the login was refused').replace(/^the VNC server( refused the connection)?:?\s*/i, '').replace(/[.\s]+$/, '');
     });
     rfb.addEventListener('clipboard', (e) => {
       const text = e.detail.text;

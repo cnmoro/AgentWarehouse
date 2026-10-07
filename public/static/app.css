@@ -677,3 +677,4 @@ body.resizing #main { pointer-events: none; }
   color: var(--text); border: 1px solid var(--accent); font: 14px var(--sans); outline: none;
 }
 @media (max-width: 700px) { .vnc-switch span:last-child { max-width: 110px; } }
+.vnc-msg .vnc-hint { color: var(--muted); font-size: 12.5px; max-width: 360px; margin: 0 auto 12px; }
