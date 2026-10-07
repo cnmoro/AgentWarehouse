@@ -1134,6 +1134,31 @@ const Files = (() => {
     return !d.paths.some((x) => p === x || p.startsWith(x + '/'));
   }
 
+  // "Move to…" / "Copy to…": ask for the folder (the one above is offered), as an
+  // absolute path, one starting with ~, or relative to this folder (../x, sub).
+  async function chooseFolderFor(op) {
+    const paths = pathsOfSelection();
+    if (!paths.length) return;
+    const what = paths.length === 1 ? baseName(paths[0]) : `${paths.length} items`;
+    const { button, value } = await dialog({
+      title: `${op === 'move' ? 'Move' : 'Copy'} ${what} to…`,
+      message: 'A folder: absolute (/home/me/x), from home (~/x) or relative to this folder (../x).',
+      input: tilde(parentOf(fb.path) || '/'),
+      buttons: [{ label: 'Cancel', value: 'cancel' }, { label: op === 'move' ? 'Move' : 'Copy', value: 'ok', primary: true }],
+    });
+    el.list.focus({ preventScroll: true });
+    if (button !== 'ok' || !value) return;
+    let to = value;
+    if (!to.startsWith('/') && !to.startsWith('~')) to = `${fb.path}/${to}`;
+    // Resolve "." and ".." here, so the message and the server see the same folder.
+    if (to.startsWith('/')) {
+      const out = [];
+      for (const seg of to.split('/')) { if (seg === '..') out.pop(); else if (seg && seg !== '.') out.push(seg); }
+      to = `/${out.join('/')}`;
+    }
+    transfer(op, paths, to);
+  }
+
   async function newFile() {
     const { button, value } = await dialog({
       title: 'New file', message: `In ${tilde(fb.path)}`, input: 'New file.txt', select: [0, 8],
@@ -1728,6 +1753,9 @@ const Files = (() => {
     const cutCopy = [
       { label: 'Cut', hint: `${mk}X`, disabled: ro, action: () => copyFiles('cut') },
       { label: 'Copy', hint: `${mk}C`, action: () => copyFiles('copy') },
+      { label: 'Move up', hint: 'one folder', disabled: ro || fb.path === '/', action: () => transfer('move', pathsOfSelection(), parentOf(fb.path)) },
+      { label: 'Move to…', disabled: ro, action: () => chooseFolderFor('move') },
+      { label: 'Copy to…', action: () => chooseFolderFor('copy') },
     ];
     if (sel.length > 1) {
       return [
