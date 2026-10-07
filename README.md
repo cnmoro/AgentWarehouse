@@ -82,6 +82,16 @@ The folder button at the top of the sidebar (**Ctrl+Shift+F**, Cmd+Shift+F on a 
 
 Everything runs as the server's user, so the file browser can reach exactly what that user's shell can.
 
+### Desktop (VNC)
+
+If this machine runs a VNC server (found automatically: the user's own `Xvnc`, or `VNC_PORT`; `VNC_HOST` and `VNC_PASSWORD_FILE` are the other settings), a monitor button at the top of the sidebar opens the desktop in the page, using noVNC. The server relays the browser's WebSocket (`/vnc`, signed-in sessions only, three at a time) to the VNC port, and does the VNC password step itself from `~/.vnc/passwd`, so there is nothing more to type; if that file cannot be read, noVNC asks for the VNC password instead.
+
+- **Resize desktop with window:** while the switch is on, the desktop's resolution follows the size of the panel (resize the window, drag the sidebar). It is off by default, because it changes the real desktop for everyone looking at it.
+- **Size:** the menu sets the desktop to a standard resolution (1024×768 up to 3840×2160, or a custom one) and turns the switch off; the desktop is then shown scaled to fit (**Scale to fit**) or at its own size with scrollbars. The last choice is remembered.
+- **Ctrl+Alt+Del**, **Paste** (sends your clipboard's text to the desktop's clipboard; what the desktop copies arrives on yours), full screen, and Reconnect. Closing the panel disconnects.
+
+Resizing needs a VNC server that supports it (TigerVNC's `Xvnc` does).
+
 ### Long history
 
 The terminal itself keeps the last 10,000 lines (`SCROLLBACK`). Everything older is moved to disk, up to 200,000 lines per tab by default (`HISTORY_LINES`), and loaded only when you look at it:

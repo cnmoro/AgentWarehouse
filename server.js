@@ -8,6 +8,7 @@ const { WebSocketServer } = require('ws');
 const { checkCredentials, loadUsers, SessionStore, LoginLimiter, DATA_DIR } = require('./lib/auth');
 const { TerminalManager, SCROLLBACK } = require('./lib/terminals');
 const files = require('./lib/files');
+const vnc = require('./lib/vnc');
 
 // Configuration errors exit with 78 (EX_CONFIG); the systemd unit does not
 // restart on that code, since retrying cannot help.
@@ -191,6 +192,12 @@ app.get('/vendor/:file', (req, res) => {
   res.sendFile(path.join(nm, vendor[req.params.file]));
 });
 app.use('/static', express.static(path.join(pub, 'static'), { index: false }));
+// noVNC, the browser VNC client (ES modules: its core/ and vendor/ folders).
+for (const dir of ['core', 'vendor']) {
+  app.use(`/vendor/novnc/${dir}`, express.static(path.join(nm, '@novnc/novnc', dir), {
+    index: false, dotfiles: 'deny', setHeaders: (res) => res.setHeader('Cache-Control', 'public, max-age=3600'),
+  }));
+}
 
 app.get('/login', (req, res) => {
   if (sessionFrom(req)) return res.redirect('/');
@@ -260,24 +267,45 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 });
 const clients = new Set();
 
+// The desktop: noVNC's WebSocket, relayed to the VNC server (lib/vnc.js).
+const vncWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
+const vncOpen = new Map(); // session id -> connections
+
 server.on('upgrade', (req, socket, head) => {
   socket.on('error', () => {});
   let session = null;
+  let route = null;
   try {
-    const ok = allowedHost(req) && sameOrigin(req) && new URL(req.url, 'http://x').pathname === '/ws';
+    const pathname = new URL(req.url, 'http://x').pathname;
+    route = pathname === '/vnc' ? 'vnc' : pathname === '/ws' ? 'ws' : null;
+    const ok = route && allowedHost(req) && sameOrigin(req);
     session = ok ? sessionFrom(req) : null;
   } catch (err) {
     console.error('upgrade error:', err.message);
   }
-  if (!session) {
+  if (!session || (route === 'vnc' && !vnc.isUp())) {
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
     return socket.destroy();
+  }
+  if (route === 'vnc') {
+    if ((vncOpen.get(session.id) || 0) >= vnc.MAX_PER_SESSION) {
+      socket.write('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n');
+      return socket.destroy();
+    }
+    return vncWss.handleUpgrade(req, socket, head, (ws) => {
+      ws.sessionId = session.id;
+      vncOpen.set(session.id, (vncOpen.get(session.id) || 0) + 1);
+      ws.on('close', () => vncOpen.set(session.id, Math.max(0, (vncOpen.get(session.id) || 1) - 1)));
+      console.log(`[vnc] ${session.email} opened the desktop`);
+      vnc.bridge(ws, session.email);
+    });
   }
   wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws, session));
 });
 
 function closeSocketsFor(sessionId) {
   for (const c of clients) if (c.sessionId === sessionId) c.ws.close(4001, 'logged out');
+  for (const ws of vncWss.clients) if (ws.sessionId === sessionId) ws.close(4001, 'logged out');
 }
 
 function send(client, msg) {
@@ -366,7 +394,7 @@ function onConnection(ws, session) {
   clients.add(client);
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
-  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, features: ['sessions', 'files', 'view'] });
+  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, features: ['sessions', 'files', 'view', ...(vnc.isUp() ? ['vnc'] : [])] });
   syncClient(client);
 
   ws.on('message', (raw) => {
@@ -485,6 +513,9 @@ setInterval(() => {
     for (const c of clients) {
       if (!sessions.isValid(c.sessionId, { checkUser: true })) c.ws.close(4001, 'session expired');
     }
+    for (const ws of vncWss.clients) {
+      if (!sessions.isValid(ws.sessionId, { checkUser: true })) ws.close(4001, 'session expired');
+    }
   } catch (err) {
     console.error('session check failed:', err);
   }
@@ -509,6 +540,7 @@ setInterval(() => {
 
 server.listen(PORT, HOST, () => {
   terminals.start();
+  vnc.watch();
   console.log(`Web terminal listening on http://${HOST.includes(':') ? `[${HOST}]` : HOST}:${PORT}`);
   console.log(`Accepted host names: ${[...ALLOWED_HOSTS].join(', ')}`);
 });

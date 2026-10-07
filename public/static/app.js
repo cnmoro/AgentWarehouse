@@ -156,6 +156,7 @@ function connect() {
           Files.setFeatures(Array.isArray(msg.features) ? msg.features : []);
           Files.setAvailable(Array.isArray(msg.features) && msg.features.includes('files'));
         }
+        if (typeof Vnc !== 'undefined') Vnc.setAvailable(Array.isArray(msg.features) && msg.features.includes('vnc'));
         break;
       case 'list': onList(msg.tabs, msg.groups); break;
       case 'snap': onSnapshot(msg); break;
@@ -2067,7 +2068,7 @@ window.addEventListener('beforeunload', (e) => {
 // through the ResizeObserver below.
 // On a phone the sidebar is a drawer over the terminal: wider by default (a
 // session name needs room beside its buttons) and allowed almost full width.
-const sidebarDefault = () => (mobile.matches ? Math.min(320, Math.round(window.innerWidth * 0.85)) : 240);
+const sidebarDefault = () => (mobile.matches ? Math.min(320, Math.round(window.innerWidth * 0.85)) : 272);
 const SIDEBAR_MIN = 160;
 const resizerEl = $('#sidebar-resizer');
 
