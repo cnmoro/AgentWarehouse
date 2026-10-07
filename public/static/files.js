@@ -225,6 +225,8 @@ const Files = (() => {
           <div class="files-empty" hidden></div>
           <div class="files-drop" hidden><div class="files-drop-box">Drop to upload into <b></b></div></div>
         </div>
+        <div class="files-pv-resizer" role="separator" aria-orientation="vertical" aria-label="Resize preview"
+             tabindex="0" title="Drag to resize · double-click to reset"></div>
         <aside class="files-preview" hidden aria-label="Preview"></aside>
       </div>
       <footer class="files-status">
@@ -246,6 +248,7 @@ const Files = (() => {
       inputFiles: q('.files-input-files'), inputDir: q('.files-input-dir'), pinBtn: q('[data-act="pin"]'),
     });
     el.hidden.checked = fb.showHidden;
+    setupPreviewResizer(root.querySelector('.files-pv-resizer'));
 
     root.addEventListener('click', (e) => {
       const b = e.target.closest('[data-act]');
@@ -724,6 +727,64 @@ const Files = (() => {
 
   // ---------------------------------------------------------------- preview
 
+  // The preview's width: drag the bar on its left edge (or use the arrow keys
+  // on it); double-click resets. Remembered per browser. The file list keeps
+  // at least PV_LEAVE px.
+  const PV_MIN = 240;
+  const PV_LEAVE = 300; // the file list keeps at least this much
+  const pvDefault = () => Math.min(720, Math.round(el.root.querySelector('.files-body').clientWidth * 0.46));
+  const pvMax = () => Math.max(PV_MIN, el.root.querySelector('.files-body').clientWidth - el.places.offsetWidth - PV_LEAVE);
+
+  function setPreviewWidth(px, { save = false } = {}) {
+    const w = Math.round(Math.max(PV_MIN, Math.min(pvMax(), px)));
+    el.root.style.setProperty('--pv-w', `${w}px`);
+    if (save) storage('wt.fbPreviewW', String(w));
+    return w;
+  }
+  const previewWidth = () => el.preview.getBoundingClientRect().width || pvDefault();
+
+  // The saved width, applied once the panel has a size (not while it is hidden).
+  function applySavedPreviewWidth() {
+    const saved = Number(storage('wt.fbPreviewW'));
+    if (saved > 0) setPreviewWidth(saved); else el.root.style.removeProperty('--pv-w');
+  }
+
+  function setupPreviewResizer(bar) {
+    bar.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      bar.setPointerCapture(e.pointerId);
+      const startX = e.clientX;
+      const startW = previewWidth();
+      el.root.classList.add('pv-resizing');
+      const move = (ev) => setPreviewWidth(startW - (ev.clientX - startX)); // the pane grows to the left
+      const end = (ev) => {
+        bar.removeEventListener('pointermove', move);
+        bar.removeEventListener('pointerup', end);
+        bar.removeEventListener('pointercancel', end);
+        el.root.classList.remove('pv-resizing');
+        setPreviewWidth(startW - (ev.clientX - startX), { save: true });
+      };
+      bar.addEventListener('pointermove', move);
+      bar.addEventListener('pointerup', end);
+      bar.addEventListener('pointercancel', end);
+    });
+    bar.addEventListener('dblclick', () => {
+      el.root.style.removeProperty('--pv-w');
+      storage('wt.fbPreviewW', '');
+    });
+    bar.addEventListener('keydown', (e) => {
+      const step = e.shiftKey ? 64 : 16;
+      if (e.key === 'ArrowLeft') setPreviewWidth(previewWidth() + step, { save: true });
+      else if (e.key === 'ArrowRight') setPreviewWidth(previewWidth() - step, { save: true });
+      else if (e.key === 'Home') { el.root.style.removeProperty('--pv-w'); storage('wt.fbPreviewW', ''); }
+      else return;
+      e.preventDefault();
+    });
+    // A narrower window may no longer fit the saved width: clamp, keeping the saved value.
+    window.addEventListener('resize', () => { if (fb.open && !el.preview.hidden) applySavedPreviewWidth(); });
+  }
+
   function closePreview() {
     fb.previewToken++;
     fb.previewPath = null;
@@ -739,6 +800,7 @@ const Files = (() => {
     fb.previewPath = p;
     el.preview.hidden = false;
     el.root.classList.add('previewing');
+    applySavedPreviewWidth();
     el.preview.textContent = '';
 
     const head = document.createElement('div');

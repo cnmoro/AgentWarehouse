@@ -346,7 +346,7 @@ body.resizing #main { pointer-events: none; }
 .place:hover .place-unpin { visibility: visible; }
 .place-unpin:hover { background: var(--line); color: var(--err); }
 
-.files-main { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.files-main { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; container-type: inline-size; }
 .files-toolbar { flex: none; display: flex; align-items: center; gap: 6px; padding: 8px 10px; flex-wrap: wrap; }
 .files-filter {
   flex: 1 1 160px; min-width: 120px; max-width: 320px; height: 28px; padding: 0 9px;
@@ -417,10 +417,21 @@ body.resizing #main { pointer-events: none; }
 .files-drop-box b { color: var(--accent); font-family: var(--mono); font-weight: 500; }
 
 .files-preview {
-  flex: none; width: min(46%, 720px); min-width: 280px; display: flex; flex-direction: column;
+  flex: none; width: var(--pv-w, min(46%, 720px)); min-width: 240px; display: flex; flex-direction: column;
   border-left: 1px solid var(--line); background: var(--panel);
 }
 .files-preview[hidden] { display: none; }
+/* The drag bar on the preview's left edge, straddling its border. */
+.files-pv-resizer {
+  display: none; flex: none; width: 9px; margin: 0 -5px 0 -4px; position: relative; z-index: 4;
+  cursor: col-resize; touch-action: none; outline: none;
+}
+.files.previewing .files-pv-resizer { display: block; }
+.files-pv-resizer::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 3px; background: transparent; transition: background .12s; }
+.files-pv-resizer:hover::after, .files-pv-resizer:focus-visible::after, .files.pv-resizing .files-pv-resizer::after { background: var(--accent); }
+/* While dragging: no text selection, and the text must not take the pointer. */
+.files.pv-resizing { cursor: col-resize; user-select: none; }
+.files.pv-resizing .files-preview, .files.pv-resizing .files-main { pointer-events: none; }
 .pv-head { flex: none; padding: 10px 12px 10px; border-bottom: 1px solid var(--line); }
 .pv-title { display: flex; align-items: center; gap: 8px; font-weight: 600; min-width: 0; }
 .pv-title > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -494,9 +505,22 @@ body.resizing #main { pointer-events: none; }
 .modal-buttons .danger { background: #5a2321; color: #ffd6d3; border: 1px solid #8a3a36; }
 .modal-buttons .danger:hover, .modal-buttons .danger:focus-visible { background: #6e2a27; outline: none; }
 
+/* A narrow list (a wide preview beside it) drops columns, dates first, so names keep their room. */
+@container (max-width: 560px) {
+  .files-cols { grid-template-columns: minmax(0, 1fr) 80px; }
+  .frow { grid-template-columns: 24px minmax(0, 1fr) 80px; }
+  .ftime, .files-cols button:nth-child(3) { display: none; }
+}
+@container (max-width: 380px) {
+  .files-cols { grid-template-columns: minmax(0, 1fr); }
+  .frow { grid-template-columns: 24px minmax(0, 1fr); }
+  .fsize, .files-cols button:nth-child(2) { display: none; }
+}
+
 @media (max-width: 900px) {
   .files-places { width: 150px; }
   .files-preview { position: absolute; inset: 0; z-index: 5; width: auto; min-width: 0; border-left: 0; }
+  .files.previewing .files-pv-resizer { display: none; }
 }
 @media (max-width: 700px) {
   .files-places { display: none; }

@@ -72,7 +72,7 @@ The folder button at the top of the sidebar (**Ctrl+Shift+F**, Cmd+Shift+F on a 
 
 - **Navigate:** double-click folders, click the path to type one (`~` works), Backspace for the parent folder, Alt+←/→ for back and forward. Type a few letters to jump to a name; the filter box narrows the list.
 - **Places and pins:** Home, the folder of the terminal on screen, and the whole computer. Pin any folder or file with ☆ or the right-click menu; pins are saved on the server, per user.
-- **Preview:** click a file. Text shows with line numbers (the first 1 MB), images are shown, and binary files offer a download.
+- **Preview:** click a file. Text shows with line numbers (the first 1 MB), images are shown, and binary files offer a download. Drag the bar on the preview's left edge to make it wider or narrower (arrow keys on the bar work too; double-click resets); the width is remembered, and the list gives up its Modified and Size columns before it gets too narrow to read names.
 - **Upload:** drop files or whole folders on the list (they go into the folder shown) or on a folder row, a pin or a path segment (they go there). The ⇪ buttons pick files or a folder. If something already exists you choose: replace, keep both, or skip.
 - **Right-click:** download (folders as .zip), copy the path, open a terminal tab in that folder, pin, rename, and move to the Trash. Delete also moves to the Trash; in places without one (such as /tmp) it asks before deleting for good.
 
