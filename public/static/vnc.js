@@ -338,6 +338,8 @@ const Vnc = (() => {
 
   function open() {
     if (!v.available) return;
+    // One panel at a time: the explorer would be hidden behind this one.
+    if (typeof Files !== 'undefined' && Files.isOpen()) Files.close({ keepFocus: true });
     build();
     v.open = true;
     el.root.hidden = false;
@@ -346,15 +348,15 @@ const Vnc = (() => {
     connect();
   }
 
-  function close() {
+  function close({ keepFocus = false } = {}) {
     if (!v.open) return;
     v.open = false;
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     disconnect();
     el.root.hidden = true;
     $('#app').classList.remove('vnc-open');
-    // The terminal on screen gets the keyboard back.
-    if (typeof focusActive === 'function') focusActive();
+    // The terminal on screen gets the keyboard back (unless another panel is taking it).
+    if (!keepFocus && typeof focusActive === 'function') focusActive();
   }
 
   // Whether this machine runs a VNC server of its own (the page offers the button anyway: any server can be typed in).

@@ -2094,6 +2094,8 @@ const Files = (() => {
 
   async function open(where) {
     if (!fb.available) return;
+    // One panel at a time: the desktop would cover this one.
+    if (typeof Vnc !== 'undefined' && Vnc.isOpen()) Vnc.close({ keepFocus: true });
     build();
     fb.open = true;
     el.root.hidden = false;
