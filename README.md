@@ -66,6 +66,16 @@ A yellow dot on a tab means the text on its screen changed since you last looked
 
 When two browsers show the same terminal, the one you used last sets its size, and the other follows it.
 
+### Split screen
+
+Drag a tab (only in a session with more than one tab), the Files button or the
+Desktop button to an edge of the terminal area; the half nearest to where you
+let go takes it, so you can have a terminal tab on the left and the explorer on
+the right, or two tabs one above the other. Drag the line between the panes to
+resize (double-click: halves). Click the tab of the second pane to swap the
+panes; the ✕ on its bar (or closing the explorer / desktop) ends the split. A
+split of tabs is remembered in this browser; it is not offered on phones.
+
 ### Files
 
 The folder button at the top of the sidebar (**Ctrl+Shift+F**, Cmd+Shift+F on a Mac) opens a file browser over the terminal, starting in your home folder.

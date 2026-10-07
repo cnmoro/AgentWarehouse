@@ -43,6 +43,7 @@ const state = {
   fontSize: Number(storage('wt.fontSize')) || 14,
   scrollback: 10000,    // replaced by the server's value on connect
   ctrlSticky: false,    // phone key bar: next key is sent with Ctrl
+  split: null,          // second pane: { kind: 'tab'|'files'|'vnc', side, frac, tabId?, group? }
 };
 
 const THEME = {
@@ -135,7 +136,7 @@ function connect() {
       // when next shown; the visible one re-attaches as soon as the list arrives.
       bgAttach.clear();
       for (const [id, v] of state.views) {
-        if (id === state.active) v.attached = false;
+        if (isShown(id)) v.attached = false;
         else disposeView(id);
       }
     } catch (err) {
@@ -349,7 +350,7 @@ function createView(id) {
   // writes are honoured, never reads, and only for the terminal on screen.
   term.parser.registerOscHandler(52, (data) => {
     const b64 = data.slice(data.indexOf(';') + 1);
-    if (!b64 || b64 === '?' || id !== state.active || !document.hasFocus()) return true;
+    if (!b64 || b64 === '?' || !isShown(id) || !document.hasFocus()) return true;
     try {
       const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
       const text = new TextDecoder().decode(bytes);
@@ -699,13 +700,18 @@ function fittedSize(v) {
   return { cols: Math.max(20, Math.min(500, dims.cols)), rows: Math.max(1, Math.min(200, dims.rows)) };
 }
 
-function fitActive() {
-  const v = state.views.get(state.active);
+function fitView(id) {
+  const v = state.views.get(id);
   if (!v || !v.el.classList.contains('visible')) return;
   const size = fittedSize(v);
   if (!size) return;
   safeResize(v.term, size.cols, size.rows);
-  send({ t: 'resize', id: state.active, cols: size.cols, rows: size.rows });
+  send({ t: 'resize', id, cols: size.cols, rows: size.rows });
+}
+function fitActive() {
+  fitView(state.active);
+  const s = splitTabId();
+  if (s) fitView(s);
 }
 
 function drawerOpen() {
@@ -721,7 +727,7 @@ function focusActive() {
 // Another browser may have resized this terminal. Take the size back as soon as
 // this one is used, not only when its window regains focus.
 function reclaimSize(id) {
-  if (id !== state.active) return;
+  if (!isShown(id)) return;
   const v = state.views.get(id);
   const size = v && fittedSize(v);
   if (size && (size.cols !== v.term.cols || size.rows !== v.term.rows)) fitActive();
@@ -769,9 +775,10 @@ function onSnapshot({ id, d, seq, cols, rows }) {
     v.term.write(slice, () => ack(v, slice.length));
   }
   bgAttach.delete(id);
-  if (id !== state.active) noteOutput(v);
-  if (id === state.active) {
+  if (!isShown(id)) noteOutput(v);
+  if (isShown(id)) {
     showView(v);
+    applyLayout();
     v.term.write('', () => {
       if (back > 0) v.term.scrollToLine(Math.max(0, v.term.buffer.active.baseY - back));
       else v.term.scrollToBottom();
@@ -785,7 +792,7 @@ function onOutput(id, d) {
   const v = state.views.get(id);
   if (!v) return;
   v.term.write(d, () => ack(v, d.length));
-  if (id !== state.active) noteOutput(v);
+  if (!isShown(id)) noteOutput(v);
 }
 
 // Another browser resized the terminal. Follow it so wrapping matches what the
@@ -796,7 +803,7 @@ function onSize({ id, cols, rows }) {
 }
 
 function markActivity(id) {
-  if (id === state.active || state.activity.has(id)) return;
+  if (isShown(id) || state.activity.has(id)) return;
   state.activity.add(id);
   renderTabs();
 }
@@ -839,17 +846,17 @@ function rememberSeen(id) {
 
 // A background tab printed: compare once it settles.
 function noteOutput(v) {
-  if (v.id === state.active) return;
+  if (isShown(v.id)) return;
   const now = Date.now();
   if (!v.actSince) v.actSince = now;
   clearTimeout(v.actTimer);
   const wait = Math.max(0, Math.min(ACT_SETTLE, v.actSince + ACT_MAX_WAIT - now));
   v.actTimer = setTimeout(() => {
     v.actSince = 0;
-    if (v.id === state.active || state.views.get(v.id) !== v) return;
+    if (isShown(v.id) || state.views.get(v.id) !== v) return;
     // Let xterm finish parsing what has arrived, then look.
     v.term.write('', () => {
-      if (v.id === state.active || state.views.get(v.id) !== v) return;
+      if (isShown(v.id) || state.views.get(v.id) !== v) return;
       const now = screenHash(v.term);
       const before = seen.get(v.id);
       if (before === undefined) {
@@ -866,7 +873,7 @@ function noteOutput(v) {
 // Fetch a hidden tab quietly; its snapshot and further output are judged like
 // any background tab's.
 function fetchInBackground(id) {
-  if (id === state.active || bgAttach.has(id)) return;
+  if (isShown(id) || bgAttach.has(id)) return;
   const v = state.views.get(id);
   if (v && v.attached) return; // its output reaches us directly
   if (send({ t: 'attach', id })) bgAttach.add(id);
@@ -884,6 +891,14 @@ function activate(id) {
   if (!state.tabs.some((t) => t.id === id)) {
     state.pendingActivate = id;
     return;
+  }
+  // Clicking the tab in the second pane trades places with the one on the left/top.
+  const sp = state.split;
+  if (sp && sp.kind === 'tab' && sp.tabId === id && state.active !== id) {
+    sp.tabId = state.tabs.some((t) => t.id === state.active) && sessionOf(state.active) === sp.group ? state.active : null;
+    if (!sp.tabId) state.split = null;
+    const old = state.views.get(id);
+    if (old) old.el.classList.remove('pane2');
   }
   const prev = state.views.get(state.active);
   if (prev && state.active !== id) {
@@ -903,6 +918,7 @@ function activate(id) {
   if (!v) v = createView(id);
   if (!v.attached && send({ t: 'attach', id })) v.attached = true;
   showView(v);
+  applyLayout();
   renderTabs();
   requestAnimationFrame(() => {
     fitActive();
@@ -920,6 +936,7 @@ function onList(tabs, groups) {
   const ids = new Set(tabs.map((t) => t.id));
   // What is being renamed was closed elsewhere: drop the input.
   if (state.renaming && !ids.has(state.renaming) && !sessions().some((g) => g.id === state.renaming)) state.renaming = null;
+  if (state.split && state.split.kind === 'tab' && !ids.has(state.split.tabId)) { state.split = null; saveSplit(); }
   for (const id of [...state.views.keys()]) if (!ids.has(id)) disposeView(id);
   for (const id of [...state.activity]) if (!ids.has(id)) state.activity.delete(id);
   if ([...seen.keys()].some((id) => !ids.has(id))) {
@@ -1258,6 +1275,7 @@ function renderStrip() {
     chip.setAttribute('role', 'tab');
     chip.setAttribute('aria-selected', String(active));
     if (active) chip.classList.add('active');
+    else if (t.id === splitTabId()) chip.classList.add('active', 'in-split');
     else if (state.activity.has(t.id)) chip.classList.add('activity');
     if (!t.alive) chip.classList.add('dead');
 
@@ -1517,6 +1535,8 @@ function addChipDrag(chip) {
     chip.classList.add('dragging');
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', chip.dataset.id);
+    // Only a session with more than one tab can give one up to a split.
+    if (tabsOf(sessionOf(chipDragId)).length > 1) setTimeout(() => startDock('tab'), 0);
   });
   chip.addEventListener('dragend', () => {
     chipDragId = null;
@@ -1542,6 +1562,275 @@ stripEl.addEventListener('drop', (e) => {
   e.preventDefault();
   if (chipDragId) moveChip(null, 'end');
 });
+
+// ------------------------------------------------------------------ split panes
+//
+// The screen can hold two things side by side (or one above the other): the
+// terminal tab in use plus another tab of the same session, the file explorer
+// or the desktop. Drag a tab, or the Files / Desktop button, to an edge of the
+// screen: the half nearest where you let go takes it.
+
+const mainEl = $('#main');
+const splitterEl = $('#splitter');
+const paneBarEl = $('#panebar');
+const dropEl = $('#dropzone');
+const dzHl = dropEl.querySelector('.dz-hl');
+const GAP = 5;       // the splitter's thickness
+const BAR = 24;      // the title bar of a tab in the second pane
+const MIN_FRAC = 0.15;
+
+function loadSplit() {
+  try {
+    const s = JSON.parse(storage('wt.split') || 'null');
+    if (s && s.kind === 'tab' && s.tabId && ['left', 'right', 'top', 'bottom'].includes(s.side)) return s;
+  } catch { /* none saved */ }
+  return null;
+}
+function saveSplit() {
+  const s = state.split;
+  storage('wt.split', s && s.kind === 'tab' ? JSON.stringify(s) : '');
+}
+state.split = loadSplit();
+
+// The tab in the second pane, when one is showing (it belongs to the session on screen).
+function splitTabId() {
+  const s = state.split;
+  if (!s || s.kind !== 'tab' || mobile.matches || !state.active) return null;
+  if (s.tabId === state.active || sessionOf(state.active) !== s.group) return null;
+  return state.tabs.some((t) => t.id === s.tabId) ? s.tabId : null;
+}
+function isShown(id) {
+  return !!id && (id === state.active || id === splitTabId());
+}
+
+function panelEl(kind) { return kind === 'files' ? $('#files') : kind === 'vnc' ? $('#vnc') : null; }
+
+function applyLayout() {
+  const s = state.split && !mobile.matches ? state.split : null;
+  const second = s && (s.kind === 'tab' ? splitTabId() : (panelEl(s.kind) && !panelEl(s.kind).hidden ? s.kind : null));
+  const top = stripEl.hidden ? 0 : 34;
+  const bottom = mobile.matches ? 44 : 0;
+  const W = mainEl.clientWidth;
+  const H = mainEl.clientHeight - top - bottom;
+  // Rectangles inside #terms: P the first pane, S the second.
+  let P = { x: 0, y: 0, w: W, h: H };
+  let S = null;
+  if (second && W > 0 && H > 0) {
+    const horizontal = s.side === 'left' || s.side === 'right';
+    const total = horizontal ? W : H;
+    const size = Math.round(Math.max(MIN_FRAC, Math.min(1 - MIN_FRAC, s.frac || 0.5)) * total);
+    const rest = total - size - GAP;
+    if (s.side === 'right') { P = { x: 0, y: 0, w: rest, h: H }; S = { x: rest + GAP, y: 0, w: size, h: H }; }
+    else if (s.side === 'left') { S = { x: 0, y: 0, w: size, h: H }; P = { x: size + GAP, y: 0, w: rest, h: H }; }
+    else if (s.side === 'bottom') { P = { x: 0, y: 0, w: W, h: rest }; S = { x: 0, y: rest + GAP, w: W, h: size }; }
+    else { S = { x: 0, y: 0, w: W, h: size }; P = { x: 0, y: size + GAP, w: W, h: rest }; }
+  }
+  const px = (n) => `${Math.round(n)}px`;
+  const set = (name, v) => mainEl.style.setProperty(name, v);
+  set('--top', px(top));
+  set('--bottom', px(bottom));
+  set('--pt', px(P.y)); set('--pl', px(P.x)); set('--pr', px(W - P.x - P.w)); set('--pb', px(H - P.y - P.h));
+  const bar = second && s.kind === 'tab' ? BAR : 0;
+  if (S) { set('--st', px(S.y)); set('--sl', px(S.x)); set('--sr', px(W - S.x - S.w)); set('--sb', px(H - S.y - S.h)); }
+  set('--sbar', px(bar));
+
+  // Terminals: the one on screen, and the one in the second pane.
+  const secondTab = s && s.kind === 'tab' ? splitTabId() : null;
+  for (const [id, v] of state.views) {
+    const pane2 = id === secondTab;
+    v.el.classList.toggle('pane2', pane2);
+    if (pane2) {
+      if (!v.el.classList.contains('visible')) {
+        v.el.classList.add('visible');
+        setWebgl(v, true);
+        state.activity.delete(id);
+      }
+    } else if (id !== state.active && v.el.classList.contains('visible')) {
+      rememberSeen(id);
+      v.el.classList.remove('visible');
+      setWebgl(v, false);
+    }
+  }
+  if (secondTab) {
+    let v = state.views.get(secondTab);
+    if (!v) v = createView(secondTab);
+    v.el.classList.add('pane2');
+    if (!v.attached && send({ t: 'attach', id: secondTab })) v.attached = true;
+    if (!v.el.classList.contains('visible')) { v.el.classList.add('visible'); setWebgl(v, true); }
+  }
+  // Panels fill their half instead of the whole screen.
+  for (const kind of ['files', 'vnc']) panelEl(kind).classList.toggle('docked', second === kind);
+
+  // The bar over a tab in the second pane, and the splitter.
+  paneBarEl.hidden = !(S && bar);
+  if (S && bar) {
+    const name = state.tabs.find((t) => t.id === secondTab)?.name || '';
+    paneBarEl.style.cssText = `left:${S.x}px;top:${top + S.y}px;width:${S.w}px;height:${BAR}px`;
+    if (paneBarEl.dataset.id !== secondTab || paneBarEl.dataset.name !== name) {
+      paneBarEl.dataset.id = secondTab;
+      paneBarEl.dataset.name = name;
+      paneBarEl.textContent = '';
+      const label = document.createElement('span');
+      label.className = 'panebar-name';
+      label.textContent = name;
+      const swap = actionButton('⇄', 'Swap with the other pane', 'Swap panes', () => activate(state.split.tabId), 'panebar-btn');
+      const close = actionButton('✕', 'Close the split (the tab stays in the session)', 'Close split', () => setSplit(null), 'panebar-btn');
+      paneBarEl.append(label, swap, close);
+    }
+  }
+  splitterEl.hidden = !S;
+  if (S) {
+    const horizontal = s.side === 'left' || s.side === 'right';
+    splitterEl.dataset.dir = horizontal ? 'h' : 'v';
+    const gx = horizontal ? (s.side === 'right' ? P.x + P.w : S.x + S.w) : 0;
+    const gy = horizontal ? 0 : (s.side === 'bottom' ? P.y + P.h : S.y + S.h);
+    splitterEl.style.cssText = horizontal
+      ? `left:${gx}px;top:${top}px;width:${GAP}px;height:${H}px`
+      : `left:0;top:${top + gy}px;width:${W}px;height:${GAP}px`;
+  }
+  mainEl.classList.toggle('split', !!S);
+}
+
+function setSplit(next) {
+  const was = state.split;
+  state.split = next;
+  saveSplit();
+  if (was && was.kind !== 'tab' && (!next || next.kind !== was.kind)) {
+    // A panel that was docked goes away with its pane.
+    if (was.kind === 'files' && Files.isOpen()) Files.close({ keepFocus: true });
+    if (was.kind === 'vnc' && Vnc.isOpen()) Vnc.close({ keepFocus: true });
+  }
+  applyLayout();
+  renderTabs();
+  requestAnimationFrame(() => { fitActive(); focusActive(); });
+}
+
+function closePanels() {
+  if (Files.isOpen()) Files.close({ keepFocus: true });
+  if (Vnc.isOpen()) Vnc.close({ keepFocus: true });
+}
+
+function dockTab(id, side) {
+  const gid = sessionOf(id);
+  if (!gid || tabsOf(gid).length < 2) return;
+  const keep = state.split && state.split.frac ? state.split.frac : 0.5;
+  state.split = null;
+  closePanels();
+  if (sessionOf(state.active) !== gid || id === state.active) {
+    const other = tabsOf(gid).find((t) => t.id !== id && t.id === lastTab.get(gid)) || tabsOf(gid).find((t) => t.id !== id);
+    activate(other.id);
+  }
+  setSplit({ kind: 'tab', side, frac: keep, tabId: id, group: gid });
+}
+
+function dockPanel(kind, side) {
+  const keep = state.split && state.split.frac ? state.split.frac : 0.5;
+  if (state.split && state.split.kind !== kind) setSplit(null);
+  state.split = { kind, side, frac: keep };
+  saveSplit();
+  const other = kind === 'files' ? Vnc : Files;
+  if (other.isOpen()) other.close({ keepFocus: true });
+  state.split = { kind, side, frac: keep };
+  if (kind === 'files') { if (!Files.isOpen()) Files.open(); } else if (!Vnc.isOpen()) Vnc.open();
+  applyLayout();
+  requestAnimationFrame(() => { fitActive(); });
+}
+
+// A panel closed or opened by its own button: keep the layout in step.
+for (const kind of ['files', 'vnc']) {
+  new MutationObserver(() => {
+    const el = panelEl(kind);
+    if (el.hidden && state.split && state.split.kind === kind) { state.split = null; saveSplit(); }
+    applyLayout();
+    requestAnimationFrame(fitActive);
+  }).observe(panelEl(kind), { attributes: true, attributeFilter: ['hidden'] });
+}
+
+// -- the drop zones, while something draggable is on its way
+let dragKind = null; // 'tab' | 'files' | 'vnc'
+function sideAt(e) {
+  const r = dropEl.getBoundingClientRect();
+  const nx = (e.clientX - r.left) / r.width;
+  const ny = (e.clientY - r.top) / r.height;
+  const d = { left: nx, right: 1 - nx, top: ny, bottom: 1 - ny };
+  return Object.keys(d).reduce((a, b) => (d[b] < d[a] ? b : a));
+}
+function startDock(kind) {
+  if (mobile.matches) return;
+  dragKind = kind;
+  dropEl.hidden = false;
+  dropEl.classList.remove('over');
+}
+function endDock() {
+  dragKind = null;
+  dropEl.hidden = true;
+  dropEl.classList.remove('over');
+}
+dropEl.addEventListener('dragover', (e) => {
+  if (!dragKind) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const side = sideAt(e);
+  dropEl.classList.add('over');
+  dropEl.dataset.side = side;
+});
+dropEl.addEventListener('dragleave', (e) => { if (e.target === dropEl) dropEl.classList.remove('over'); });
+dropEl.addEventListener('drop', (e) => {
+  e.preventDefault();
+  const side = sideAt(e);
+  const kind = dragKind;
+  const id = chipDragId;
+  endDock();
+  if (kind === 'tab' && id) dockTab(id, side);
+  else if (kind === 'files' || kind === 'vnc') dockPanel(kind, side);
+});
+document.addEventListener('dragend', endDock);
+for (const [sel, kind] of [['.files-btn', 'files'], ['.vnc-btn', 'vnc']]) {
+  for (const b of document.querySelectorAll(sel)) {
+    b.draggable = true;
+    b.addEventListener('dragstart', (e) => {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', kind);
+      // Shown after the browser has taken the drag image.
+      setTimeout(() => startDock(kind), 0);
+    });
+  }
+}
+
+// -- the splitter
+splitterEl.addEventListener('pointerdown', (e) => {
+  const s = state.split;
+  if (!s) return;
+  e.preventDefault();
+  splitterEl.setPointerCapture(e.pointerId);
+  document.body.classList.add('resizing');
+  const move = (ev) => {
+    const r = mainEl.getBoundingClientRect();
+    const top = stripEl.hidden ? 0 : 34;
+    const bottom = mobile.matches ? 44 : 0;
+    const W = r.width, H = r.height - top - bottom;
+    const x = ev.clientX - r.left, y = ev.clientY - r.top - top;
+    const size = s.side === 'right' ? W - x : s.side === 'left' ? x : s.side === 'bottom' ? H - y : y;
+    const total = s.side === 'left' || s.side === 'right' ? W : H;
+    s.frac = Math.max(MIN_FRAC, Math.min(1 - MIN_FRAC, (size - GAP / 2) / total));
+    applyLayout();
+  };
+  const end = () => {
+    splitterEl.removeEventListener('pointermove', move);
+    splitterEl.removeEventListener('pointerup', end);
+    splitterEl.removeEventListener('pointercancel', end);
+    document.body.classList.remove('resizing');
+    saveSplit();
+    fitActive();
+  };
+  splitterEl.addEventListener('pointermove', move);
+  splitterEl.addEventListener('pointerup', end);
+  splitterEl.addEventListener('pointercancel', end);
+});
+splitterEl.addEventListener('dblclick', () => {
+  if (state.split) { state.split.frac = 0.5; saveSplit(); applyLayout(); fitActive(); }
+});
+mobile.addEventListener('change', () => { applyLayout(); fitActive(); });
 
 // ------------------------------------------------------------------ long-term history
 //
@@ -2141,7 +2430,7 @@ mobile.addEventListener('change', () => setSidebar(!mobile.matches && !storage('
 let resizeTimer = null;
 new ResizeObserver(() => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(fitActive, 50);
+  resizeTimer = setTimeout(() => { applyLayout(); fitActive(); }, 50);
 }).observe(termsEl);
 
 // When several browsers share a terminal, the one in use sets its size.
