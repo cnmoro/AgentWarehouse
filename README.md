@@ -92,6 +92,8 @@ The folder button at the top of the sidebar (**Ctrl+Shift+F**, Cmd+Shift+F on a 
 
 Everything runs as the server's user, so the file browser can reach exactly what that user's shell can.
 
+Markdown files (`.md`) are drawn in the preview (headings, lists, tables, code, pictures next to the file); untick *Render* to read the raw text. The HTML is sanitized (marked + DOMPurify), so scripts in a file never run.
+
 ### Desktop (VNC)
 
 If this machine runs a VNC server (found automatically: the user's own `Xvnc`, or `VNC_PORT`; `VNC_HOST` and `VNC_PASSWORD_FILE` are the other settings), a monitor button at the top of the sidebar opens the desktop in the page, using noVNC. The server relays the browser's WebSocket (`/vnc`, signed-in sessions only, three at a time) to the VNC port, and does the VNC password step itself from `~/.vnc/passwd`, so there is nothing more to type; if that file cannot be read, noVNC asks for the VNC password instead.

@@ -20,6 +20,7 @@ const Files = (() => {
     view: ['details', 'list', 'small', 'large'].includes(storage('wt.fbView')) ? storage('wt.fbView') : 'details',
     cols: (() => { try { const c = JSON.parse(storage('wt.fbCols') || '{}'); return { vis: Array.isArray(c.vis) ? c.vis : null, w: c.w && typeof c.w === 'object' ? c.w : {} }; } catch { return { vis: null, w: {} }; } })(),
     colSig: '',
+    render: storage('wt.fbMd') !== '0', // Markdown files: draw them instead of showing the text
     source: false, // HTML and SVG files: show the text instead of the page
     clip: null,  // { op: 'copy' | 'cut', paths } the files copied or cut inside the browser
     drag: null,  // { dir, names } while rows are being dragged
@@ -1514,6 +1515,29 @@ const Files = (() => {
       body.append(n);
       return;
     }
+    const isMd = ['md', 'markdown', 'mdown', 'mkd'].includes(ext);
+    const canRender = isMd && typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined';
+    if (canRender) {
+      const lab = document.createElement('label');
+      lab.className = 'pv-check';
+      lab.title = 'Draw the Markdown (headings, lists, code, tables) instead of showing the text';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = fb.render;
+      box.onchange = () => { fb.render = box.checked; storage('wt.fbMd', fb.render ? '1' : '0'); showPreview(e, { play }); };
+      lab.append(box, ' Render');
+      actions.append(lab);
+      if (fb.render) {
+        body.append(renderMarkdown(data.text, dirOf(p)));
+        if (data.truncated) {
+          const n = document.createElement('div');
+          n.className = 'pv-note pv-trunc';
+          n.textContent = `Showing the first ${fmtSize(data.text.length)} of ${fmtSize(data.size)}. Download the file to see all of it.`;
+          body.append(n);
+        }
+        return;
+      }
+    }
     const wrapBtn = act(fb.wrap ? 'No wrap' : 'Wrap', () => {
       fb.wrap = !fb.wrap;
       storage('wt.fbWrap', fb.wrap ? '1' : '');
@@ -1539,6 +1563,34 @@ const Files = (() => {
       n.textContent = `Showing the first ${fmtSize(data.text.length)} of ${fmtSize(data.size)}. Download the file to see all of it.`;
       body.append(n);
     }
+  }
+
+  const dirOf = (p) => p.slice(0, p.lastIndexOf('/')) || '/';
+
+  // Markdown to safe HTML. Pictures next to the file are loaded from the server;
+  // links open in a new tab, and links to anything else are left inert.
+  function renderMarkdown(text, dir) {
+    const root = document.createElement('div');
+    root.className = 'pv-md';
+    const html = marked.parse(text, { gfm: true, breaks: false, async: false });
+    root.innerHTML = DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+    for (const img of root.querySelectorAll('img')) {
+      const src = img.getAttribute('src') || '';
+      if (/^(data:image\/|\/api\/files\/)/i.test(src)) continue;
+      if (/^[a-z][a-z0-9+.-]*:|^\/\//i.test(src)) { img.replaceWith(Object.assign(document.createElement('span'), { className: 'pv-md-missing', textContent: `[image: ${img.alt || src}]` })); continue; }
+      const parts = (src.startsWith('/') ? src : `${dir}/${src}`).split('/').reduce((acc, seg) => {
+        if (seg === '..') acc.pop(); else if (seg && seg !== '.') acc.push(seg);
+        return acc;
+      }, []);
+      img.src = `/api/files/raw?inline=1&path=${enc('/' + parts.join('/'))}`;
+      img.loading = 'lazy';
+    }
+    for (const a of root.querySelectorAll('a')) {
+      const href = a.getAttribute('href') || '';
+      if (/^(https?:|mailto:)/i.test(href)) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
+      else if (!href.startsWith('#')) a.removeAttribute('href');
+    }
+    return root;
   }
 
   // ---------------------------------------------------------------- actions

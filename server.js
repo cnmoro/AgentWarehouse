@@ -186,6 +186,8 @@ const vendor = {
   'addon-web-links.js': '@xterm/addon-web-links/lib/addon-web-links.js',
   'addon-webgl.js': '@xterm/addon-webgl/lib/addon-webgl.js',
   'addon-unicode11.js': '@xterm/addon-unicode11/lib/addon-unicode11.js',
+  'marked.js': 'marked/lib/marked.umd.js',
+  'purify.js': 'dompurify/dist/purify.min.js',
 };
 app.get('/vendor/:file', (req, res) => {
   if (!Object.hasOwn(vendor, req.params.file)) return res.sendStatus(404);
