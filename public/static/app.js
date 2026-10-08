@@ -1044,6 +1044,12 @@ function handleKey(term, e) {
     e.preventDefault();
     return false;
   }
+  // Ctrl+Shift+K: find a session by name.
+  if (mod && e.shiftKey && !e.altKey && e.code === 'KeyK') {
+    setSearch(true);
+    e.preventDefault();
+    return false;
+  }
   // Ctrl+Shift+E: jump to the tab list (Tab itself belongs to the shell).
   if (mod && e.shiftKey && !e.altKey && e.code === 'KeyE') {
     if (appEl.classList.contains('collapsed')) setSidebar(true);
@@ -1139,6 +1145,64 @@ function actionButton(text, title, label, onclick, className) {
   return b;
 }
 
+// ---- finding a session by name (fuzzy): the letters typed must appear in order;
+// runs of them, and ones that start a word, rank higher.
+const searchEl = $('#search');
+const searchQ = $('#search-q');
+let query = '';
+function fuzzy(name, q) {
+  const n = name.toLowerCase();
+  const hits = [];
+  let score = 0, from = 0, prev = -2;
+  for (const ch of q.toLowerCase()) {
+    if (ch === ' ') continue;
+    const i = n.indexOf(ch, from);
+    if (i < 0) return null;
+    hits.push(i);
+    score += 1 + (i === prev + 1 ? 5 : 0) + (i === 0 || /[\s\-_./]/.test(n[i - 1]) ? 4 : 0) - Math.min(i, 20) * 0.05;
+    prev = i;
+    from = i + 1;
+  }
+  // A plain substring is the best match there is.
+  const sub = n.indexOf(q.toLowerCase().trim());
+  if (sub >= 0) score += 20 - Math.min(sub, 15) * 0.2;
+  return { score, hits };
+}
+function markName(el, name, hits) {
+  el.textContent = '';
+  const set = new Set(hits);
+  let run = '', on = false;
+  const flush = () => {
+    if (!run) return;
+    if (on) { const m = document.createElement('mark'); m.textContent = run; el.append(m); } else el.append(run);
+    run = '';
+  };
+  [...name].forEach((c, i) => { if (set.has(i) !== on) { flush(); on = set.has(i); } run += c; });
+  flush();
+}
+function setSearch(open) {
+  searchEl.hidden = !open;
+  $('#search-btn').setAttribute('aria-expanded', String(open));
+  if (open) {
+    if (appEl.classList.contains('collapsed')) setSidebar(true);
+    searchQ.focus();
+    searchQ.select();
+  } else {
+    query = '';
+    searchQ.value = '';
+    renderSidebar();
+  }
+}
+$('#search-btn').onclick = () => setSearch(searchEl.hidden);
+searchQ.addEventListener('input', () => { query = searchQ.value.trim(); renderSidebar(); });
+searchQ.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { e.preventDefault(); setSearch(false); focusActive(); }
+  else if (e.key === 'Enter') {
+    const first = tabsEl.querySelector('.tab');
+    if (first) { activateSession(first.dataset.id); setSearch(false); focusActive(); }
+  } else if (e.key === 'ArrowDown') { e.preventDefault(); tabsEl.querySelector('.tab')?.focus(); }
+});
+
 function renderSidebar() {
   const hadFocus = tabsEl.contains(document.activeElement) ? document.activeElement.closest('.tab')?.dataset.id : null;
   const current = sessionOf(state.active);
@@ -1163,7 +1227,7 @@ function renderSidebar() {
     dot.setAttribute('aria-hidden', 'true');
     const name = document.createElement('span');
     name.className = 'name';
-    name.textContent = g.name;
+    if (query && g._hits) markName(name, g.name, g._hits); else name.textContent = g.name;
     name.title = `${g.name}${members.length > 1 ? ` · ${members.length} tabs` : ''}\nDouble-click to rename`;
     li.append(dot, name);
     if (members.length > 1) {
@@ -1194,6 +1258,18 @@ function renderSidebar() {
     if (hadFocus === g.id) li.focus();
   };
   const all = sessions();
+  if (query) {
+    // Matches, best first, hidden sessions included.
+    const found = all.map((g) => ({ g, m: fuzzy(g.name, query) })).filter((x) => x.m).sort((a, b) => b.m.score - a.m.score);
+    for (const { g, m } of found) { g._hits = m.hits; addItem(g, hiddenIds.has(g.id)); delete g._hits; }
+    if (!found.length) {
+      const none = document.createElement('li');
+      none.className = 'search-none';
+      none.textContent = 'No session matches';
+      tabsEl.appendChild(none);
+    }
+    return;
+  }
   all.filter((g) => !hiddenIds.has(g.id)).forEach((g) => addItem(g, false));
   const hid = all.filter((g) => hiddenIds.has(g.id));
   if (hid.length) {

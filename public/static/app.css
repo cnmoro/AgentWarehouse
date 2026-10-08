@@ -741,3 +741,14 @@ body.resizing #main { pointer-events: none; }
 .pv-md input[type="checkbox"] { margin-right: 6px; }
 .pv-md-missing { color: var(--muted); font-style: italic; }
 #panebars[hidden], #splitters[hidden] { display: none; }
+
+/* ---------- finding a session ---------- */
+.search { padding: 0 10px 6px; }
+.search[hidden] { display: none; }
+.search input {
+  width: 100%; padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--panel-2); color: var(--text); font: inherit; font-size: 13px; outline: none;
+}
+.search input:focus { border-color: var(--accent); }
+.tab .name mark { background: none; color: var(--accent); font-weight: 600; }
+.search-none { padding: 10px 12px; color: var(--muted); font-size: 13px; list-style: none; }

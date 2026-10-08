@@ -21,11 +21,15 @@
       <div class="sidebar-head">
         <div class="brand"><span class="brand-mark" aria-hidden="true">&gt;_</span> Terminals</div>
         <div class="head-actions">
+          <button id="search-btn" class="icon-btn" title="Find a session (Ctrl+Shift+K)" aria-label="Find a session" aria-expanded="false"><svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8.5 2a6.5 6.5 0 0 1 5.2 10.4l4.2 4.2-1.1 1.1-4.2-4.2A6.5 6.5 0 1 1 8.5 2zm0 1.5a5 5 0 1 0 0 10 5 5 0 0 0 0-10z"/></svg></button>
           <button class="icon-btn vnc-btn" title="Desktop (VNC)" aria-label="Desktop" hidden><svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M2 3.5A1.5 1.5 0 0 1 3.5 2h13A1.5 1.5 0 0 1 18 3.5v9a1.5 1.5 0 0 1-1.5 1.5H11v2h3v1.5H6V16h3v-2H3.5A1.5 1.5 0 0 1 2 12.5zm1.5 0v9h13v-9z"/></svg></button>
           <button class="icon-btn files-btn" title="Files (Ctrl+Shift+F)" aria-label="Files" hidden><svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M2 5.5A1.5 1.5 0 0 1 3.5 4h4l1.6 1.8h7.4A1.5 1.5 0 0 1 18 7.3v7.2a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 2 14.5z"/></svg></button>
           <button class="icon-btn new-tab" title="New terminal (opens in the current tab's folder)" aria-label="New terminal">+</button>
           <button id="collapse" class="icon-btn" title="Hide sidebar" aria-label="Hide sidebar">«</button>
         </div>
+      </div>
+      <div id="search" class="search" hidden>
+        <input id="search-q" type="search" placeholder="Find a session…" aria-label="Find a session" autocomplete="off" spellcheck="false">
       </div>
       <ul id="tabs" role="tablist" aria-orientation="vertical"
           title="Ctrl+Shift+E to get here. Arrow keys to move, F2 to rename, Delete to close, Esc back to the terminal"></ul>

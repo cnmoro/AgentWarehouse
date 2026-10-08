@@ -66,6 +66,8 @@ A yellow dot on a tab means the text on its screen changed since you last looked
 
 When two browsers show the same terminal, the one you used last sets its size, and the other follows it.
 
+The magnifier in the sidebar (or Ctrl+Shift+K) finds a session by name: type some of its letters in order ("wf" finds "web-frontend"); Enter opens the best match, Esc closes the search. Hidden sessions are searched too.
+
 ### Split screen
 
 The area under the tab strip holds up to four panes, a 2x2 grid at most. Drag a
