@@ -8,6 +8,7 @@ const { WebSocketServer } = require('ws');
 const { checkCredentials, loadUsers, SessionStore, LoginLimiter, DATA_DIR } = require('./lib/auth');
 const { TerminalManager, SCROLLBACK } = require('./lib/terminals');
 const files = require('./lib/files');
+const ssh = require('./lib/ssh');
 const vnc = require('./lib/vnc');
 
 // Configuration errors exit with 78 (EX_CONFIG); the systemd unit does not
@@ -252,6 +253,7 @@ app.get('/', (req, res) => {
 });
 
 app.use('/api/files', files.router({ sessionFrom, sameOrigin, dataDir: DATA_DIR, terminals }));
+app.use('/api/ssh', ssh.router({ sessionFrom, sameOrigin, dataDir: DATA_DIR, terminals }));
 
 app.use((req, res) => res.sendStatus(404));
 
@@ -401,7 +403,7 @@ function onConnection(ws, session) {
   clients.add(client);
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
-  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, features: ['sessions', 'files', 'view', 'vnc', 'vnc-target', ...(vnc.isUp() ? ['vnc-local'] : [])] });
+  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, features: ['sessions', 'files', 'view', 'vnc', 'vnc-target', 'ssh', ...(vnc.isUp() ? ['vnc-local'] : [])] });
   syncClient(client);
 
   ws.on('message', (raw) => {

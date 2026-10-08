@@ -1,0 +1,3 @@
+#!/bin/sh
+# Starts a saved SSH connection (see scripts/wt-ssh.js).
+exec "${WT_NODE:-node}" "$(dirname "$(readlink -f "$0")")/../scripts/wt-ssh.js" "$@"

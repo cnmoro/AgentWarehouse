@@ -1,0 +1,25 @@
+#!/bin/sh
+# SSH_ASKPASS helper for wt-ssh: answers ssh's first password or passphrase
+# question from the saved connection, once. Anything else (a second try after a
+# wrong password, a verification code, a yes/no question) is asked on the terminal.
+prompt="$1"
+case "$prompt" in
+  *[Pp]assphrase*) kind=pp; secret="$WT_SSH_PASSPHRASE" ;;
+  *[Pp]assword*) kind=pw; secret="$WT_SSH_PASSWORD" ;;
+  *) kind=; secret= ;;
+esac
+if [ -n "$kind" ] && [ -n "$secret" ] && [ -n "$WT_SSH_STATE" ] && [ ! -e "$WT_SSH_STATE.$kind" ]; then
+  : > "$WT_SSH_STATE.$kind"
+  printf '%s\n' "$secret"
+  exit 0
+fi
+[ -r /dev/tty ] || exit 1
+printf '%s' "$prompt" > /dev/tty
+hidden=
+case "$prompt" in
+  *yes/no*|*[Ff]ingerprint*) ;;
+  *) hidden=1; stty -echo < /dev/tty 2>/dev/null ;;
+esac
+IFS= read -r answer < /dev/tty
+if [ -n "$hidden" ]; then stty echo < /dev/tty 2>/dev/null; printf '\n' > /dev/tty; fi
+printf '%s\n' "$answer"

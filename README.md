@@ -68,6 +68,26 @@ When two browsers show the same terminal, the one you used last sets its size, a
 
 The magnifier in the sidebar (or Ctrl+Shift+K) finds a session by name: type some of its letters in order ("wf" finds "web-frontend"); Enter opens the best match, Esc closes the search. Hidden sessions are searched too.
 
+### SSH connections
+
+The SSH button in the sidebar opens a list of saved connections (name, host,
+port, user, and a password and/or a key file): create, edit, delete, and
+**Connect** opens a new session that is already logged in, with ssh started from
+this machine. Drop a `.pem`, `.ppk` (PuTTY keys are converted to OpenSSH format
+with `puttygen`, from the `putty-tools` package) or OpenSSH key on the form;
+Windows line endings and a missing final newline are fixed, public keys are
+refused, and a passphrase can be saved too. Everything is stored on the server
+in `DATA_DIR`: `ssh.json` (passwords and passphrases encrypted with the random
+key in `ssh.key`, so the file alone reveals nothing), `ssh-keys/` (mode 0600).
+Secrets are never sent back to the page; ssh gets them through `SSH_ASKPASS`
+(`bin/wt-askpass`), once, and anything else it asks (a second try, a
+verification code) is asked in the terminal. New hosts are trusted on first use
+(`accept-new`); a changed host key is refused. Every terminal also has the
+`wt-ssh <id>` command on its PATH, which is what the session runs: after a server
+restart, Enter runs it again. Whoever signs in to this page can use the saved
+connections, and whoever can read the data folder as this user can read the
+secrets.
+
 ### Split screen
 
 The area under the tab strip holds up to four panes, a 2x2 grid at most. Drag a
