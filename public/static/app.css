@@ -740,3 +740,4 @@ body.resizing #main { pointer-events: none; }
 .pv-md img { max-width: 100%; }
 .pv-md input[type="checkbox"] { margin-right: 6px; }
 .pv-md-missing { color: var(--muted); font-style: italic; }
+#panebars[hidden], #splitters[hidden] { display: none; }

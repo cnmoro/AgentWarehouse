@@ -1736,6 +1736,10 @@ function applyLayout() {
     }
   }
 
+  // A panel covering everything (not one of the panes) hides the panes' bars and splitters too.
+  const covered = ['files', 'vnc'].some((k) => !panelEl(k).hidden && !panelEl(k).classList.contains('docked'));
+  barsEl.hidden = splittersEl.hidden = covered;
+
   // Title bars of the terminals and the splitters.
   const key = multi ? out.leaves.map((l) => `${l.n}:${l.kind}:${l.tabId}:${sessionLabel(l.tabId)}:${l._r.x},${l._r.y},${l._r.w}`).join('|') + `|${tabLeaves().length}` : '';
   if (key !== barKey) {
