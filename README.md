@@ -68,13 +68,16 @@ When two browsers show the same terminal, the one you used last sets its size, a
 
 ### Split screen
 
-Drag a tab (only in a session with more than one tab), the Files button or the
-Desktop button to an edge of the terminal area; the half nearest to where you
-let go takes it, so you can have a terminal tab on the left and the explorer on
-the right, or two tabs one above the other. Drag the line between the panes to
-resize (double-click: halves). Click the tab of the second pane to swap the
-panes; the ✕ on its bar (or closing the explorer / desktop) ends the split. A
-split of tabs is remembered in this browser; it is not offered on phones.
+The area under the tab strip holds up to four panes, a 2x2 grid at most. Drag a
+tab, a session from the sidebar, a pane's title bar, or the Files / Desktop
+button over it: the half of the pane under the pointer, nearest the edge you
+approach, takes it; the middle of a pane swaps the two. So you can have two
+sessions side by side, a terminal and the explorer, or four terminals.
+Clicking or typing in a pane gives it the keyboard (and the tab strip shows its
+session); choosing a session or tab replaces what that pane shows. Drag the lines
+between panes to resize (double-click: halves); the ✕ on a pane's title bar closes
+the pane (the terminal keeps running). The arrangement of terminals is remembered
+in this browser. Not offered on phones.
 
 ### Files
 

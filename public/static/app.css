@@ -149,9 +149,7 @@ body.resizing #main { pointer-events: none; }
 #terms { position: absolute; inset: 0; overflow: clip; }
 /* display:none (not visibility) so xterm pauses rendering of hidden tabs: a
    flood in a background tab then costs parsing only. */
-/* --p*: room taken by the other pane, --s*: where the second pane sits (set by applyLayout). */
-.term { position: absolute; inset: calc(8px + var(--pt, 0px)) calc(4px + var(--pr, 0px)) calc(4px + var(--pb, 0px)) calc(10px + var(--pl, 0px)); display: none; }
-.term.pane2 { inset: calc(8px + var(--st, 0px) + var(--sbar, 0px)) calc(4px + var(--sr, 0px)) calc(4px + var(--sb, 0px)) calc(10px + var(--sl, 0px)); }
+.term { position: absolute; inset: 8px 4px 4px 10px; display: none; }
 .term.visible { display: block; }
 .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); text-align: center; }
 .empty[hidden] { display: none; }
@@ -692,22 +690,20 @@ body.resizing #main { pointer-events: none; }
 .vnc-target[hidden] { display: none; }
 
 /* ---------- split panes ---------- */
-.files.docked, .vnc.docked {
-  inset: calc(var(--top, 0px) + var(--st, 0px)) var(--sr, 0px) calc(var(--bottom, 0px) + var(--sb, 0px)) var(--sl, 0px);
-  border: 1px solid var(--line);
-}
-#splitter { position: absolute; z-index: 16; background: var(--line); touch-action: none; }
-#splitter[hidden] { display: none; }
-#splitter[data-dir="h"] { cursor: col-resize; }
-#splitter[data-dir="v"] { cursor: row-resize; }
-#splitter:hover, body.resizing #splitter { background: var(--accent); }
+.files.docked, .vnc.docked { border: 1px solid var(--line); }
+.splitter { position: absolute; z-index: 16; background: var(--line); touch-action: none; }
+.splitter[data-dir="h"] { cursor: col-resize; }
+.splitter[data-dir="v"] { cursor: row-resize; }
+.splitter:hover, body.resizing .splitter { background: var(--accent); }
 /* A wider hit area than the line you see. */
-#splitter::before { content: ""; position: absolute; inset: -4px; }
+.splitter::before { content: ""; position: absolute; inset: -4px; }
+#panebars { position: absolute; inset: 0; pointer-events: none; z-index: 6; }
 .panebar {
-  position: absolute; z-index: 6; display: flex; align-items: center; gap: 4px; padding: 0 4px 0 10px;
+  position: absolute; display: flex; align-items: center; gap: 4px; padding: 0 4px 0 10px; pointer-events: auto;
   background: var(--panel); border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted);
+  cursor: grab; user-select: none; overflow: hidden;
 }
-.panebar[hidden] { display: none; }
+.panebar.focus { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
 .panebar-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .panebar-btn { width: 20px; height: 20px; border: 0; border-radius: 4px; background: none; color: inherit; font-size: 12px; line-height: 1; padding: 0; }
 .panebar-btn:hover { background: var(--panel-2); color: var(--text); }
@@ -716,13 +712,9 @@ body.resizing #main { pointer-events: none; }
 .dropzone[hidden] { display: none; }
 .dz-hl {
   position: absolute; display: none; background: rgba(95, 179, 255, .22); border: 2px solid var(--accent);
-  border-radius: 4px; pointer-events: none;
+  border-radius: 4px; pointer-events: none; transition: left .08s, top .08s, width .08s, height .08s;
 }
 .dropzone.over .dz-hl { display: block; }
-.dropzone[data-side="left"] .dz-hl { inset: 6px 50% 6px 6px; }
-.dropzone[data-side="right"] .dz-hl { inset: 6px 6px 6px 50%; }
-.dropzone[data-side="top"] .dz-hl { inset: 6px 6px 50% 6px; }
-.dropzone[data-side="bottom"] .dz-hl { inset: 50% 6px 6px 6px; }
 
 /* ---------- rendered Markdown in the preview ---------- */
 .pv-check { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--muted); cursor: pointer; user-select: none; }

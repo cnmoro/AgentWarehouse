@@ -43,7 +43,6 @@ const state = {
   fontSize: Number(storage('wt.fontSize')) || 14,
   scrollback: 10000,    // replaced by the server's value on connect
   ctrlSticky: false,    // phone key bar: next key is sent with Ctrl
-  split: null,          // second pane: { kind: 'tab'|'files'|'vnc', side, frac, tabId?, group? }
 };
 
 const THEME = {
@@ -302,6 +301,7 @@ function silenceQueries(term) {
 function createView(id) {
   const el = document.createElement('div');
   el.className = 'term';
+  el.dataset.id = id;
   termsEl.appendChild(el);
 
   const term = new Terminal({
@@ -709,9 +709,7 @@ function fitView(id) {
   send({ t: 'resize', id, cols: size.cols, rows: size.rows });
 }
 function fitActive() {
-  fitView(state.active);
-  const s = splitTabId();
-  if (s) fitView(s);
+  for (const id of shownTabs()) fitView(id);
 }
 
 function drawerOpen() {
@@ -892,20 +890,8 @@ function activate(id) {
     state.pendingActivate = id;
     return;
   }
-  // Clicking the tab in the second pane trades places with the one on the left/top.
-  const sp = state.split;
-  if (sp && sp.kind === 'tab' && sp.tabId === id && state.active !== id) {
-    sp.tabId = state.tabs.some((t) => t.id === state.active) && sessionOf(state.active) === sp.group ? state.active : null;
-    if (!sp.tabId) state.split = null;
-    const old = state.views.get(id);
-    if (old) old.el.classList.remove('pane2');
-  }
-  const prev = state.views.get(state.active);
-  if (prev && state.active !== id) {
-    rememberSeen(state.active);
-    prev.el.classList.remove('visible');
-    setWebgl(prev, false);
-  }
+  if (state.active && state.active !== id && state.views.has(state.active)) rememberSeen(state.active);
+  placeTab(id);
   if (hist.open && hist.id !== id) histClose();
   hideHistPill();
   state.active = id;
@@ -917,8 +903,8 @@ function activate(id) {
   let v = state.views.get(id);
   if (!v) v = createView(id);
   if (!v.attached && send({ t: 'attach', id })) v.attached = true;
-  showView(v);
   applyLayout();
+  saveLayout();
   renderTabs();
   requestAnimationFrame(() => {
     fitActive();
@@ -936,7 +922,11 @@ function onList(tabs, groups) {
   const ids = new Set(tabs.map((t) => t.id));
   // What is being renamed was closed elsewhere: drop the input.
   if (state.renaming && !ids.has(state.renaming) && !sessions().some((g) => g.id === state.renaming)) state.renaming = null;
-  if (state.split && state.split.kind === 'tab' && !ids.has(state.split.tabId)) { state.split = null; saveSplit(); }
+  // A pane whose terminal is gone closes (the last terminal pane waits for its neighbour).
+  for (const leaf of tabLeaves()) {
+    if (leaf.tabId && !ids.has(leaf.tabId) && tabLeaves().length > 1) removeLeaf(leaf);
+  }
+  barKey = '';
   for (const id of [...state.views.keys()]) if (!ids.has(id)) disposeView(id);
   for (const id of [...state.activity]) if (!ids.has(id)) state.activity.delete(id);
   if ([...seen.keys()].some((id) => !ids.has(id))) {
@@ -1275,7 +1265,7 @@ function renderStrip() {
     chip.setAttribute('role', 'tab');
     chip.setAttribute('aria-selected', String(active));
     if (active) chip.classList.add('active');
-    else if (t.id === splitTabId()) chip.classList.add('active', 'in-split');
+    else if (isShown(t.id)) chip.classList.add('active', 'in-split');
     else if (state.activity.has(t.id)) chip.classList.add('activity');
     if (!t.alive) chip.classList.add('dead');
 
@@ -1489,6 +1479,10 @@ function addDrag(li) {
     li.classList.add('dragging');
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', li.dataset.id);
+    // A session can be dropped on the screen: its tab in use goes there.
+    const gid = li.dataset.id;
+    const tab = hasSessions() ? (tabsOf(gid).find((t) => t.id === lastTab.get(gid)) || tabsOf(gid)[0]) : state.tabs.find((t) => t.id === gid);
+    if (tab) setTimeout(() => startDock({ kind: 'tab', id: tab.id }), 0);
   });
   li.addEventListener('dragend', () => {
     dragId = null;
@@ -1535,8 +1529,7 @@ function addChipDrag(chip) {
     chip.classList.add('dragging');
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', chip.dataset.id);
-    // Only a session with more than one tab can give one up to a split.
-    if (tabsOf(sessionOf(chipDragId)).length > 1) setTimeout(() => startDock('tab'), 0);
+    setTimeout(() => startDock({ kind: 'tab', id: chipDragId }), 0);
   });
   chip.addEventListener('dragend', () => {
     chipDragId = null;
@@ -1565,224 +1558,432 @@ stripEl.addEventListener('drop', (e) => {
 
 // ------------------------------------------------------------------ split panes
 //
-// The screen can hold two things side by side (or one above the other): the
-// terminal tab in use plus another tab of the same session, the file explorer
-// or the desktop. Drag a tab, or the Files / Desktop button, to an edge of the
-// screen: the half nearest where you let go takes it.
+// The area under the tab strip holds up to four panes (a 2x2 grid at most):
+// terminal tabs (of any session), the file explorer and the desktop. Drag a
+// tab, a session from the sidebar, a pane's title bar, or the Files / Desktop
+// button over the area: the half of the pane under the pointer nearest to the
+// edge you approach takes it; the middle of a pane swaps.
+//
+// The layout is a binary tree. A leaf shows one thing; a node splits its
+// area in two ('h': side by side, 'v': one above the other) at `frac`.
 
 const mainEl = $('#main');
-const splitterEl = $('#splitter');
-const paneBarEl = $('#panebar');
+const splittersEl = $('#splitters');
+const barsEl = $('#panebars');
 const dropEl = $('#dropzone');
 const dzHl = dropEl.querySelector('.dz-hl');
-const GAP = 5;       // the splitter's thickness
-const BAR = 24;      // the title bar of a tab in the second pane
-const MIN_FRAC = 0.15;
+const GAP = 5;         // the splitter's thickness
+const BAR = 24;        // the title bar of a terminal when there are several panes
+const MIN_FRAC = 0.12;
+const MAX_PANES = 4;
 
-function loadSplit() {
-  try {
-    const s = JSON.parse(storage('wt.split') || 'null');
-    if (s && s.kind === 'tab' && s.tabId && ['left', 'right', 'top', 'bottom'].includes(s.side)) return s;
-  } catch { /* none saved */ }
-  return null;
-}
-function saveSplit() {
-  const s = state.split;
-  storage('wt.split', s && s.kind === 'tab' ? JSON.stringify(s) : '');
-}
-state.split = loadSplit();
+let leafSeq = 0;
+const newLeaf = (kind, tabId = null) => ({ type: 'leaf', kind, tabId, n: ++leafSeq });
+const layout = { root: newLeaf('tab', state.active), focus: null };
+layout.focus = layout.root;
 
-// The tab in the second pane, when one is showing (it belongs to the session on screen).
-function splitTabId() {
-  const s = state.split;
-  if (!s || s.kind !== 'tab' || mobile.matches || !state.active) return null;
-  if (s.tabId === state.active || sessionOf(state.active) !== s.group) return null;
-  return state.tabs.some((t) => t.id === s.tabId) ? s.tabId : null;
+const leavesOf = (n = layout.root) => (n.type === 'leaf' ? [n] : [...leavesOf(n.a), ...leavesOf(n.b)]);
+const tabLeaves = () => leavesOf().filter((l) => l.kind === 'tab');
+const leafOfTab = (id) => tabLeaves().find((l) => l.tabId === id) || null;
+const leafOfKind = (kind) => leavesOf().find((l) => l.kind === kind) || null;
+function parentOf(node, root = layout.root) {
+  if (root.type === 'leaf') return null;
+  if (root.a === node || root.b === node) return root;
+  return parentOf(node, root.a) || parentOf(node, root.b);
 }
-function isShown(id) {
-  return !!id && (id === state.active || id === splitTabId());
+function replaceNode(old, next) {
+  const p = parentOf(old);
+  if (!p) layout.root = next;
+  else if (p.a === old) p.a = next;
+  else p.b = next;
 }
+const panelEl = (kind) => (kind === 'files' ? $('#files') : kind === 'vnc' ? $('#vnc') : null);
+const panelApi = (kind) => (kind === 'files' ? Files : Vnc);
 
-function panelEl(kind) { return kind === 'files' ? $('#files') : kind === 'vnc' ? $('#vnc') : null; }
-
-function applyLayout() {
-  const s = state.split && !mobile.matches ? state.split : null;
-  const second = s && (s.kind === 'tab' ? splitTabId() : (panelEl(s.kind) && !panelEl(s.kind).hidden ? s.kind : null));
-  const top = stripEl.hidden ? 0 : 34;
-  const bottom = mobile.matches ? 44 : 0;
-  const W = mainEl.clientWidth;
-  const H = mainEl.clientHeight - top - bottom;
-  // Rectangles inside #terms: P the first pane, S the second.
-  let P = { x: 0, y: 0, w: W, h: H };
-  let S = null;
-  if (second && W > 0 && H > 0) {
-    const horizontal = s.side === 'left' || s.side === 'right';
-    const total = horizontal ? W : H;
-    const size = Math.round(Math.max(MIN_FRAC, Math.min(1 - MIN_FRAC, s.frac || 0.5)) * total);
-    const rest = total - size - GAP;
-    if (s.side === 'right') { P = { x: 0, y: 0, w: rest, h: H }; S = { x: rest + GAP, y: 0, w: size, h: H }; }
-    else if (s.side === 'left') { S = { x: 0, y: 0, w: size, h: H }; P = { x: size + GAP, y: 0, w: rest, h: H }; }
-    else if (s.side === 'bottom') { P = { x: 0, y: 0, w: W, h: rest }; S = { x: 0, y: rest + GAP, w: W, h: size }; }
-    else { S = { x: 0, y: 0, w: W, h: size }; P = { x: 0, y: size + GAP, w: W, h: rest }; }
+// What is saved: the tabs in their places (a panel is not reopened by a reload).
+function plain(n) {
+  if (n.type === 'leaf') return n.kind === 'tab' && n.tabId ? { t: n.tabId } : null;
+  const a = plain(n.a), b = plain(n.b);
+  if (a && b) return { d: n.dir, f: Math.round(n.frac * 1000) / 1000, a, b };
+  return a || b;
+}
+function saveLayout() {
+  const p = plain(layout.root);
+  storage('wt.layout', p && !p.t ? JSON.stringify({ tree: p, focus: state.active }) : '');
+}
+function inflate(p) {
+  if (!p) return null;
+  if (p.t) return newLeaf('tab', String(p.t));
+  const a = inflate(p.a), b = inflate(p.b);
+  if (!a || !b) return a || b;
+  return { type: 'node', dir: p.d === 'v' ? 'v' : 'h', frac: Math.max(MIN_FRAC, Math.min(1 - MIN_FRAC, Number(p.f) || 0.5)), a, b };
+}
+try {
+  const saved = JSON.parse(storage('wt.layout') || 'null');
+  const root = saved && inflate(saved.tree);
+  if (root && leavesOf(root).length <= MAX_PANES) {
+    layout.root = root;
+    layout.focus = leavesOf(root).find((l) => l.tabId === state.active) || leavesOf(root)[0];
   }
-  const px = (n) => `${Math.round(n)}px`;
-  const set = (name, v) => mainEl.style.setProperty(name, v);
-  set('--top', px(top));
-  set('--bottom', px(bottom));
-  set('--pt', px(P.y)); set('--pl', px(P.x)); set('--pr', px(W - P.x - P.w)); set('--pb', px(H - P.y - P.h));
-  const bar = second && s.kind === 'tab' ? BAR : 0;
-  if (S) { set('--st', px(S.y)); set('--sl', px(S.x)); set('--sr', px(W - S.x - S.w)); set('--sb', px(H - S.y - S.h)); }
-  set('--sbar', px(bar));
+} catch { /* none saved */ }
 
-  // Terminals: the one on screen, and the one in the second pane.
-  const secondTab = s && s.kind === 'tab' ? splitTabId() : null;
+// The terminal pane that has the keyboard (or the first one).
+function focusedTabLeaf() {
+  if (layout.focus && layout.focus.kind === 'tab' && leavesOf().includes(layout.focus)) return layout.focus;
+  return tabLeaves()[0] || null;
+}
+// Tabs on screen: on a phone only the one in use.
+function shownTabs() {
+  if (mobile.matches) return state.active ? [state.active] : [];
+  return tabLeaves().map((l) => l.tabId).filter(Boolean);
+}
+function isShown(id) { return !!id && shownTabs().includes(id); }
+
+// Where the tab goes when it is chosen (strip, sidebar): into the pane that has
+// the keyboard, or, if it is on screen already, that pane gets the keyboard.
+function placeTab(id) {
+  const there = leafOfTab(id);
+  if (there) { layout.focus = there; return; }
+  let leaf = focusedTabLeaf();
+  if (!leaf) { // only panels are left: the focused one gives way
+    leaf = layout.focus || layout.root;
+    if (leaf.kind !== 'tab') closePanel(leaf.kind);
+    leaf.kind = 'tab';
+  }
+  leaf.tabId = id;
+  layout.focus = leaf;
+}
+
+function closePanel(kind) {
+  const api = panelApi(kind);
+  if (api.isOpen()) api.close({ keepFocus: true });
+}
+
+function sessionLabel(tabId) {
+  const t = state.tabs.find((x) => x.id === tabId);
+  if (!t) return '';
+  const g = hasSessions() && state.groups.find((x) => x.id === t.group);
+  return g && tabsOf(g.id).length > 1 ? `${g.name} › ${t.name}` : g ? g.name : t.name;
+}
+
+let barKey = '';
+function applyLayout() {
+  const mob = mobile.matches;
+  const W = termsEl.clientWidth, H = termsEl.clientHeight;
+  const top = termsEl.offsetTop;
+  mainEl.style.setProperty('--top', `${top}px`);
+  mainEl.style.setProperty('--bottom', `${Math.max(0, mainEl.clientHeight - top - H)}px`);
+
+  // On a phone: just the pane that has the keyboard.
+  let root = layout.root;
+  if (mob) root = focusedTabLeaf() || root;
+  const out = { leaves: [], nodes: [] };
+  (function place(n, r) {
+    n._r = r;
+    if (n.type === 'leaf') { out.leaves.push(n); return; }
+    out.nodes.push(n);
+    const f = Math.max(MIN_FRAC, Math.min(1 - MIN_FRAC, n.frac));
+    if (n.dir === 'h') {
+      const w1 = Math.round((r.w - GAP) * f);
+      place(n.a, { x: r.x, y: r.y, w: w1, h: r.h });
+      place(n.b, { x: r.x + w1 + GAP, y: r.y, w: r.w - w1 - GAP, h: r.h });
+    } else {
+      const h1 = Math.round((r.h - GAP) * f);
+      place(n.a, { x: r.x, y: r.y, w: r.w, h: h1 });
+      place(n.b, { x: r.x, y: r.y + h1 + GAP, w: r.w, h: r.h - h1 - GAP });
+    }
+  })(root, { x: 0, y: 0, w: W, h: H });
+  const multi = out.leaves.length > 1;
+  mainEl.classList.toggle('split', multi);
+
+  // Terminals: those on screen are visible (and sized by their pane), the rest are not.
+  const wantLeaf = new Map(out.leaves.filter((l) => l.kind === 'tab' && l.tabId && state.tabs.some((t) => t.id === l.tabId)).map((l) => [l.tabId, l]));
   for (const [id, v] of state.views) {
-    const pane2 = id === secondTab;
-    v.el.classList.toggle('pane2', pane2);
-    if (pane2) {
-      if (!v.el.classList.contains('visible')) {
-        v.el.classList.add('visible');
-        setWebgl(v, true);
-        state.activity.delete(id);
-      }
-    } else if (id !== state.active && v.el.classList.contains('visible')) {
+    const leaf = wantLeaf.get(id);
+    if (leaf) continue;
+    if (v.el.classList.contains('visible')) {
       rememberSeen(id);
       v.el.classList.remove('visible');
       setWebgl(v, false);
     }
   }
-  if (secondTab) {
-    let v = state.views.get(secondTab);
-    if (!v) v = createView(secondTab);
-    v.el.classList.add('pane2');
-    if (!v.attached && send({ t: 'attach', id: secondTab })) v.attached = true;
-    if (!v.el.classList.contains('visible')) { v.el.classList.add('visible'); setWebgl(v, true); }
-  }
-  // Panels fill their half instead of the whole screen.
-  for (const kind of ['files', 'vnc']) panelEl(kind).classList.toggle('docked', second === kind);
-
-  // The bar over a tab in the second pane, and the splitter.
-  paneBarEl.hidden = !(S && bar);
-  if (S && bar) {
-    const name = state.tabs.find((t) => t.id === secondTab)?.name || '';
-    paneBarEl.style.cssText = `left:${S.x}px;top:${top + S.y}px;width:${S.w}px;height:${BAR}px`;
-    if (paneBarEl.dataset.id !== secondTab || paneBarEl.dataset.name !== name) {
-      paneBarEl.dataset.id = secondTab;
-      paneBarEl.dataset.name = name;
-      paneBarEl.textContent = '';
-      const label = document.createElement('span');
-      label.className = 'panebar-name';
-      label.textContent = name;
-      const swap = actionButton('⇄', 'Swap with the other pane', 'Swap panes', () => activate(state.split.tabId), 'panebar-btn');
-      const close = actionButton('✕', 'Close the split (the tab stays in the session)', 'Close split', () => setSplit(null), 'panebar-btn');
-      paneBarEl.append(label, swap, close);
+  for (const [id, leaf] of wantLeaf) {
+    let v = state.views.get(id);
+    if (!v) v = createView(id);
+    if (!v.attached && send({ t: 'attach', id })) v.attached = true;
+    if (!v.el.classList.contains('visible')) {
+      v.el.classList.add('visible');
+      setWebgl(v, true);
+      state.activity.delete(id);
+    }
+    const r = leaf._r;
+    const bar = multi ? BAR : 0;
+    if (multi) {
+      Object.assign(v.el.style, { inset: 'auto', left: `${r.x + 10}px`, top: `${r.y + bar + 8}px`, width: `${Math.max(0, r.w - 14)}px`, height: `${Math.max(0, r.h - bar - 12)}px` });
+    } else {
+      v.el.style.inset = v.el.style.left = v.el.style.top = v.el.style.width = v.el.style.height = '';
     }
   }
-  splitterEl.hidden = !S;
-  if (S) {
-    const horizontal = s.side === 'left' || s.side === 'right';
-    splitterEl.dataset.dir = horizontal ? 'h' : 'v';
-    const gx = horizontal ? (s.side === 'right' ? P.x + P.w : S.x + S.w) : 0;
-    const gy = horizontal ? 0 : (s.side === 'bottom' ? P.y + P.h : S.y + S.h);
-    splitterEl.style.cssText = horizontal
-      ? `left:${gx}px;top:${top}px;width:${GAP}px;height:${H}px`
-      : `left:0;top:${top + gy}px;width:${W}px;height:${GAP}px`;
+  // Panels fill their pane; one that is not a pane covers everything, as it always did.
+  for (const kind of ['files', 'vnc']) {
+    const el = panelEl(kind);
+    const leaf = out.leaves.find((l) => l.kind === kind);
+    el.classList.toggle('docked', !!leaf && multi);
+    if (leaf && multi) {
+      Object.assign(el.style, { inset: 'auto', left: `${leaf._r.x}px`, top: `${top + leaf._r.y}px`, width: `${leaf._r.w}px`, height: `${leaf._r.h}px` });
+    } else {
+      el.style.inset = el.style.left = el.style.top = el.style.width = el.style.height = '';
+    }
   }
-  mainEl.classList.toggle('split', !!S);
+
+  // Title bars of the terminals and the splitters.
+  const key = multi ? out.leaves.map((l) => `${l.n}:${l.kind}:${l.tabId}:${sessionLabel(l.tabId)}:${l._r.x},${l._r.y},${l._r.w}`).join('|') + `|${tabLeaves().length}` : '';
+  if (key !== barKey) {
+    barKey = key;
+    barsEl.textContent = '';
+    if (multi) {
+      for (const l of out.leaves.filter((x) => x.kind === 'tab' && x.tabId)) {
+        const bar = document.createElement('div');
+        bar.className = 'panebar' + (l === layout.focus ? ' focus' : '');
+        bar.dataset.n = l.n;
+        bar.draggable = true;
+        bar.style.cssText = `left:${l._r.x}px;top:${top + l._r.y}px;width:${l._r.w}px;height:${BAR}px`;
+        const name = document.createElement('span');
+        name.className = 'panebar-name';
+        name.textContent = sessionLabel(l.tabId);
+        bar.append(name);
+        if (tabLeaves().length > 1) bar.append(actionButton('✕', 'Close this pane (the terminal keeps running)', 'Close pane', () => closeLeaf(l), 'panebar-btn'));
+        bar.addEventListener('pointerdown', () => focusLeaf(l));
+        bar.addEventListener('dragstart', (e) => {
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', l.tabId);
+          setTimeout(() => startDock({ kind: 'tab', id: l.tabId }), 0);
+        });
+        barsEl.append(bar);
+      }
+    }
+  } else if (multi) {
+    // Positions only (the bars are kept so a drag in progress survives).
+    for (const bar of barsEl.children) {
+      const l = out.leaves.find((x) => String(x.n) === bar.dataset.n);
+      if (l) bar.style.cssText = `left:${l._r.x}px;top:${top + l._r.y}px;width:${l._r.w}px;height:${BAR}px`;
+    }
+  }
+  for (const bar of barsEl.children) bar.classList.toggle('focus', String(layout.focus && layout.focus.n) === bar.dataset.n);
+  while (splittersEl.children.length > out.nodes.length) splittersEl.lastChild.remove();
+  while (splittersEl.children.length < out.nodes.length) splittersEl.append(makeSplitter());
+  out.nodes.forEach((n, i) => {
+    const s = splittersEl.children[i];
+    s._node = n;
+    s.dataset.dir = n.dir;
+    const r = n._r, a = n.a._r;
+    s.style.cssText = n.dir === 'h'
+      ? `left:${a.x + a.w}px;top:${top + r.y}px;width:${GAP}px;height:${r.h}px`
+      : `left:${r.x}px;top:${top + a.y + a.h}px;width:${r.w}px;height:${GAP}px`;
+  });
 }
 
-function setSplit(next) {
-  const was = state.split;
-  state.split = next;
-  saveSplit();
-  if (was && was.kind !== 'tab' && (!next || next.kind !== was.kind)) {
-    // A panel that was docked goes away with its pane.
-    if (was.kind === 'files' && Files.isOpen()) Files.close({ keepFocus: true });
-    if (was.kind === 'vnc' && Vnc.isOpen()) Vnc.close({ keepFocus: true });
-  }
+function makeSplitter() {
+  const s = document.createElement('div');
+  s.className = 'splitter';
+  s.setAttribute('role', 'separator');
+  s.title = 'Drag to resize · double-click to halve';
+  s.addEventListener('pointerdown', (e) => {
+    const n = s._node;
+    if (!n) return;
+    e.preventDefault();
+    s.setPointerCapture(e.pointerId);
+    document.body.classList.add('resizing');
+    const move = (ev) => {
+      const t = termsEl.getBoundingClientRect();
+      const r = n._r;
+      const pos = n.dir === 'h' ? ev.clientX - t.left - r.x : ev.clientY - t.top - r.y;
+      const total = (n.dir === 'h' ? r.w : r.h) - GAP;
+      n.frac = Math.max(MIN_FRAC, Math.min(1 - MIN_FRAC, (pos - GAP / 2) / total));
+      applyLayout();
+    };
+    const end = () => {
+      s.removeEventListener('pointermove', move);
+      s.removeEventListener('pointerup', end);
+      s.removeEventListener('pointercancel', end);
+      document.body.classList.remove('resizing');
+      saveLayout();
+      fitActive();
+    };
+    s.addEventListener('pointermove', move);
+    s.addEventListener('pointerup', end);
+    s.addEventListener('pointercancel', end);
+  });
+  s.addEventListener('dblclick', () => { if (s._node) { s._node.frac = 0.5; saveLayout(); applyLayout(); fitActive(); } });
+  return s;
+}
+
+function relayout({ focus = true } = {}) {
   applyLayout();
+  saveLayout();
   renderTabs();
-  requestAnimationFrame(() => { fitActive(); focusActive(); });
+  requestAnimationFrame(() => { fitActive(); if (focus) focusActive(); });
 }
 
-function closePanels() {
-  if (Files.isOpen()) Files.close({ keepFocus: true });
-  if (Vnc.isOpen()) Vnc.close({ keepFocus: true });
+// A pane goes away; its sibling takes the whole space.
+function removeLeaf(leaf, { closePanelToo = true } = {}) {
+  const p = parentOf(leaf);
+  if (!p) return false;
+  replaceNode(p, p.a === leaf ? p.b : p.a);
+  if (layout.focus === leaf) layout.focus = null;
+  if (closePanelToo && leaf.kind !== 'tab') closePanel(leaf.kind);
+  if (!layout.focus || !leavesOf().includes(layout.focus)) layout.focus = tabLeaves()[0] || leavesOf()[0];
+  const f = focusedTabLeaf();
+  if (f && f.tabId && state.active !== f.tabId) { state.active = f.tabId; storage('wt.active', f.tabId); }
+  return true;
+}
+function closeLeaf(leaf) {
+  if (leaf.kind === 'tab' && tabLeaves().length < 2) return;
+  if (removeLeaf(leaf)) { barKey = ''; relayout(); }
+}
+function focusLeaf(leaf) {
+  if (layout.focus === leaf) return;
+  layout.focus = leaf;
+  if (leaf.kind === 'tab' && leaf.tabId && leaf.tabId !== state.active) activate(leaf.tabId);
+  else { barKey = ''; applyLayout(); }
 }
 
-function dockTab(id, side) {
-  const gid = sessionOf(id);
-  if (!gid || tabsOf(gid).length < 2) return;
-  const keep = state.split && state.split.frac ? state.split.frac : 0.5;
-  state.split = null;
-  closePanels();
-  if (sessionOf(state.active) !== gid || id === state.active) {
-    const other = tabsOf(gid).find((t) => t.id !== id && t.id === lastTab.get(gid)) || tabsOf(gid).find((t) => t.id !== id);
-    activate(other.id);
+// Splits `target` so that `content` (a new leaf) sits on `side` of it.
+function splitLeaf(target, content, side) {
+  const horizontal = side === 'left' || side === 'right';
+  const first = side === 'left' || side === 'top';
+  const node = { type: 'node', dir: horizontal ? 'h' : 'v', frac: 0.5, a: first ? content : target, b: first ? target : content };
+  replaceNode(target, node);
+}
+
+// Dropped on a pane: `target` the pane, `where` an edge or 'center'.
+// `drag` is { kind: 'tab', id } or { kind: 'files' | 'vnc' }.
+function dropOn(target, where, drag) {
+  const wasFocus = layout.focus;
+  void wasFocus;
+  if (drag.kind === 'tab') {
+    const id = drag.id;
+    const there = leafOfTab(id);
+    if (where === 'center') {
+      if (target.kind !== 'tab') return;
+      if (there && there !== target) { const mine = target.tabId; target.tabId = id; there.tabId = mine; if (target.kind !== 'tab') { /* swapped into a tab pane */ } }
+      else if (target.kind === 'tab') target.tabId = id;
+      else return;
+      layout.focus = target;
+    } else {
+      if (target.tabId === id) {
+        // Its own pane: the pane keeps another tab of the session.
+        const gid = sessionOf(id);
+        const shown = new Set(shownTabs());
+        const other = tabsOf(gid).find((t) => t.id !== id && !shown.has(t.id));
+        if (!other) return;
+        target.tabId = other.id;
+      } else if (there) {
+        if (!removeLeaf(there)) return;
+      }
+      if (leavesOf().length >= MAX_PANES) return;
+      const N = newLeaf('tab', id);
+      splitLeaf(target, N, where);
+      layout.focus = N;
+    }
+    state.active = id;
+    storage('wt.active', id);
+    state.activity.delete(id);
+    rememberLastTab(id);
+  } else {
+    const kind = drag.kind;
+    const there = leafOfKind(kind);
+    if (there === target) return;
+    if (there) removeLeaf(there, { closePanelToo: false });
+    if (where === 'center' || leavesOf().length >= MAX_PANES) {
+      // Only a terminal pane can give way, and one terminal must remain.
+      if (target.kind !== 'tab' || tabLeaves().length < 2) return;
+      target.kind = kind;
+      target.tabId = null;
+      layout.focus = target;
+    } else {
+      const N = newLeaf(kind);
+      splitLeaf(target, N, where);
+      layout.focus = N;
+    }
+    closePanel(kind === 'files' ? 'vnc' : 'files');
+    const api = panelApi(kind);
+    if (!api.isOpen()) api.open();
   }
-  setSplit({ kind: 'tab', side, frac: keep, tabId: id, group: gid });
+  barKey = '';
+  hideHistPill();
+  if (hist.open) histClose();
+  relayout();
 }
 
-function dockPanel(kind, side) {
-  const keep = state.split && state.split.frac ? state.split.frac : 0.5;
-  if (state.split && state.split.kind !== kind) setSplit(null);
-  state.split = { kind, side, frac: keep };
-  saveSplit();
-  const other = kind === 'files' ? Vnc : Files;
-  if (other.isOpen()) other.close({ keepFocus: true });
-  state.split = { kind, side, frac: keep };
-  if (kind === 'files') { if (!Files.isOpen()) Files.open(); } else if (!Vnc.isOpen()) Vnc.open();
-  applyLayout();
-  requestAnimationFrame(() => { fitActive(); });
-}
-
-// A panel closed or opened by its own button: keep the layout in step.
+// A panel was closed or opened by its own button: keep the panes in step.
 for (const kind of ['files', 'vnc']) {
   new MutationObserver(() => {
     const el = panelEl(kind);
-    if (el.hidden && state.split && state.split.kind === kind) { state.split = null; saveSplit(); }
+    const leaf = leafOfKind(kind);
+    if (el.hidden && leaf) {
+      if (tabLeaves().length && removeLeaf(leaf, { closePanelToo: false })) { barKey = ''; relayout({ focus: false }); return; }
+    }
     applyLayout();
     requestAnimationFrame(fitActive);
   }).observe(panelEl(kind), { attributes: true, attributeFilter: ['hidden'] });
+  panelEl(kind).addEventListener('pointerdown', () => { const l = leafOfKind(kind); if (l && layout.focus !== l) { layout.focus = l; barKey = ''; applyLayout(); } }, true);
 }
 
 // -- the drop zones, while something draggable is on its way
-let dragKind = null; // 'tab' | 'files' | 'vnc'
-function sideAt(e) {
-  const r = dropEl.getBoundingClientRect();
-  const nx = (e.clientX - r.left) / r.width;
-  const ny = (e.clientY - r.top) / r.height;
-  const d = { left: nx, right: 1 - nx, top: ny, bottom: 1 - ny };
-  return Object.keys(d).reduce((a, b) => (d[b] < d[a] ? b : a));
-}
-function startDock(kind) {
+let drag = null; // { kind: 'tab', id } | { kind: 'files' | 'vnc' }
+function startDock(d) {
   if (mobile.matches) return;
-  dragKind = kind;
+  drag = d;
   dropEl.hidden = false;
   dropEl.classList.remove('over');
+  barsEl.style.pointerEvents = 'none';
 }
 function endDock() {
-  dragKind = null;
+  drag = null;
   dropEl.hidden = true;
   dropEl.classList.remove('over');
+  barsEl.style.pointerEvents = '';
+}
+// The pane under the pointer and where in it: an edge, or the middle.
+function dropTarget(e) {
+  const r = dropEl.getBoundingClientRect();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  const leaves = leavesOf();
+  const leaf = leaves.find((l) => x >= l._r.x && x < l._r.x + l._r.w + GAP && y >= l._r.y && y < l._r.y + l._r.h + GAP) || leaves[0];
+  const b = leaf._r;
+  const nx = (x - b.x) / b.w, ny = (y - b.y) / b.h;
+  const d = { left: nx, right: 1 - nx, top: ny, bottom: 1 - ny };
+  const side = Object.keys(d).reduce((a, k) => (d[k] < d[a] ? k : a));
+  const center = leaves.length > 1 && d[side] > 0.28;
+  let where = center ? 'center' : side;
+  // Full: an edge can only swap.
+  if (where !== 'center' && leaves.length >= MAX_PANES && !(drag && drag.kind === 'tab' && leaf.tabId === drag.id)) where = 'center';
+  return { leaf, where };
+}
+function showHighlight(t) {
+  const b = t.leaf._r;
+  let r = { x: b.x, y: b.y, w: b.w, h: b.h };
+  if (t.where === 'left') r.w = b.w / 2;
+  else if (t.where === 'right') { r.x = b.x + b.w / 2; r.w = b.w / 2; }
+  else if (t.where === 'top') r.h = b.h / 2;
+  else if (t.where === 'bottom') { r.y = b.y + b.h / 2; r.h = b.h / 2; }
+  Object.assign(dzHl.style, { left: `${r.x + 4}px`, top: `${r.y + 4}px`, width: `${r.w - 8}px`, height: `${r.h - 8}px` });
 }
 dropEl.addEventListener('dragover', (e) => {
-  if (!dragKind) return;
+  if (!drag) return;
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
-  const side = sideAt(e);
   dropEl.classList.add('over');
-  dropEl.dataset.side = side;
+  showHighlight(dropTarget(e));
 });
 dropEl.addEventListener('dragleave', (e) => { if (e.target === dropEl) dropEl.classList.remove('over'); });
 dropEl.addEventListener('drop', (e) => {
   e.preventDefault();
-  const side = sideAt(e);
-  const kind = dragKind;
-  const id = chipDragId;
+  const d = drag;
+  const t = d ? dropTarget(e) : null;
   endDock();
-  if (kind === 'tab' && id) dockTab(id, side);
-  else if (kind === 'files' || kind === 'vnc') dockPanel(kind, side);
+  if (d && t) dropOn(t.leaf, t.where, d);
 });
 document.addEventListener('dragend', endDock);
 for (const [sel, kind] of [['.files-btn', 'files'], ['.vnc-btn', 'vnc']]) {
@@ -1791,46 +1992,17 @@ for (const [sel, kind] of [['.files-btn', 'files'], ['.vnc-btn', 'vnc']]) {
     b.addEventListener('dragstart', (e) => {
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', kind);
-      // Shown after the browser has taken the drag image.
-      setTimeout(() => startDock(kind), 0);
+      setTimeout(() => startDock({ kind }), 0); // after the browser has taken the drag image
     });
   }
 }
-
-// -- the splitter
-splitterEl.addEventListener('pointerdown', (e) => {
-  const s = state.split;
-  if (!s) return;
-  e.preventDefault();
-  splitterEl.setPointerCapture(e.pointerId);
-  document.body.classList.add('resizing');
-  const move = (ev) => {
-    const r = mainEl.getBoundingClientRect();
-    const top = stripEl.hidden ? 0 : 34;
-    const bottom = mobile.matches ? 44 : 0;
-    const W = r.width, H = r.height - top - bottom;
-    const x = ev.clientX - r.left, y = ev.clientY - r.top - top;
-    const size = s.side === 'right' ? W - x : s.side === 'left' ? x : s.side === 'bottom' ? H - y : y;
-    const total = s.side === 'left' || s.side === 'right' ? W : H;
-    s.frac = Math.max(MIN_FRAC, Math.min(1 - MIN_FRAC, (size - GAP / 2) / total));
-    applyLayout();
-  };
-  const end = () => {
-    splitterEl.removeEventListener('pointermove', move);
-    splitterEl.removeEventListener('pointerup', end);
-    splitterEl.removeEventListener('pointercancel', end);
-    document.body.classList.remove('resizing');
-    saveSplit();
-    fitActive();
-  };
-  splitterEl.addEventListener('pointermove', move);
-  splitterEl.addEventListener('pointerup', end);
-  splitterEl.addEventListener('pointercancel', end);
+// Clicking or typing in a terminal pane gives it the keyboard.
+termsEl.addEventListener('focusin', (e) => {
+  const t = e.target.closest && e.target.closest('.term');
+  const id = t && t.dataset.id;
+  if (id && id !== state.active && isShown(id)) activate(id);
 });
-splitterEl.addEventListener('dblclick', () => {
-  if (state.split) { state.split.frac = 0.5; saveSplit(); applyLayout(); fitActive(); }
-});
-mobile.addEventListener('change', () => { applyLayout(); fitActive(); });
+mobile.addEventListener('change', () => { barKey = ''; applyLayout(); fitActive(); });
 
 // ------------------------------------------------------------------ long-term history
 //
