@@ -2065,7 +2065,15 @@ dropEl.addEventListener('drop', (e) => {
   endDock();
   if (d && t) dropOn(t.leaf, t.where, d);
 });
+// dragend never arrives when the dragged element was rebuilt meanwhile (a session
+// dropped in the sidebar re-renders the list), so every other way a drag ends
+// removes the overlay too: any drop, Esc, and any pointer movement with no button down.
 document.addEventListener('dragend', endDock);
+document.addEventListener('drop', () => setTimeout(endDock, 0), true);
+document.addEventListener('pointermove', (e) => { if (drag && e.buttons === 0) endDock(); }, true);
+document.addEventListener('pointerdown', () => { if (drag) endDock(); }, true);
+document.addEventListener('keydown', (e) => { if (drag && e.key === 'Escape') endDock(); }, true);
+window.addEventListener('blur', () => { if (drag) endDock(); });
 for (const [sel, kind] of [['.files-btn', 'files'], ['.vnc-btn', 'vnc']]) {
   for (const b of document.querySelectorAll(sel)) {
     b.draggable = true;
