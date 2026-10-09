@@ -927,7 +927,7 @@ function onList(tabs, groups) {
   for (const leaf of tabLeaves()) {
     if (leaf.tabId && !ids.has(leaf.tabId) && tabLeaves().length > 1) removeLeaf(leaf);
   }
-  barKey = '';
+  barKey = null;
   for (const id of [...state.views.keys()]) if (!ids.has(id)) disposeView(id);
   for (const id of [...state.activity]) if (!ids.has(id)) state.activity.delete(id);
   if ([...seen.keys()].some((id) => !ids.has(id))) {
@@ -1743,7 +1743,7 @@ function sessionLabel(tabId) {
   return g && tabsOf(g.id).length > 1 ? `${g.name} › ${t.name}` : g ? g.name : t.name;
 }
 
-let barKey = '';
+let barKey = null;  // null: rebuild the bars at the next layout
 function applyLayout() {
   const mob = mobile.matches;
   const W = termsEl.clientWidth, H = termsEl.clientHeight;
@@ -1818,7 +1818,7 @@ function applyLayout() {
   barsEl.hidden = splittersEl.hidden = covered;
 
   // Title bars of the terminals and the splitters.
-  const key = multi ? out.leaves.map((l) => `${l.n}:${l.kind}:${l.tabId}:${sessionLabel(l.tabId)}:${l._r.x},${l._r.y},${l._r.w}`).join('|') + `|${tabLeaves().length}` : '';
+  const key = multi ? out.leaves.map((l) => `${l.n}:${l.kind}:${l.tabId}:${sessionLabel(l.tabId)}:${l._r.x},${l._r.y},${l._r.w}`).join('|') + `|${tabLeaves().length}` : 'single';
   if (key !== barKey) {
     barKey = key;
     barsEl.textContent = '';
@@ -1920,13 +1920,13 @@ function removeLeaf(leaf, { closePanelToo = true } = {}) {
 }
 function closeLeaf(leaf) {
   if (leaf.kind === 'tab' && tabLeaves().length < 2) return;
-  if (removeLeaf(leaf)) { barKey = ''; relayout(); }
+  if (removeLeaf(leaf)) { barKey = null; relayout(); }
 }
 function focusLeaf(leaf) {
   if (layout.focus === leaf) return;
   layout.focus = leaf;
   if (leaf.kind === 'tab' && leaf.tabId && leaf.tabId !== state.active) activate(leaf.tabId);
-  else { barKey = ''; applyLayout(); }
+  else { barKey = null; applyLayout(); }
 }
 
 // Splits `target` so that `content` (a new leaf) sits on `side` of it.
@@ -1991,7 +1991,7 @@ function dropOn(target, where, drag) {
     const api = panelApi(kind);
     if (!api.isOpen()) api.open();
   }
-  barKey = '';
+  barKey = null;
   hideHistPill();
   if (hist.open) histClose();
   relayout();
@@ -2003,12 +2003,12 @@ for (const kind of ['files', 'vnc']) {
     const el = panelEl(kind);
     const leaf = leafOfKind(kind);
     if (el.hidden && leaf) {
-      if (tabLeaves().length && removeLeaf(leaf, { closePanelToo: false })) { barKey = ''; relayout({ focus: false }); return; }
+      if (tabLeaves().length && removeLeaf(leaf, { closePanelToo: false })) { barKey = null; relayout({ focus: false }); return; }
     }
     applyLayout();
     requestAnimationFrame(fitActive);
   }).observe(panelEl(kind), { attributes: true, attributeFilter: ['hidden'] });
-  panelEl(kind).addEventListener('pointerdown', () => { const l = leafOfKind(kind); if (l && layout.focus !== l) { layout.focus = l; barKey = ''; applyLayout(); } }, true);
+  panelEl(kind).addEventListener('pointerdown', () => { const l = leafOfKind(kind); if (l && layout.focus !== l) { layout.focus = l; barKey = null; applyLayout(); } }, true);
 }
 
 // -- the drop zones, while something draggable is on its way
@@ -2091,7 +2091,7 @@ termsEl.addEventListener('focusin', (e) => {
   const id = t && t.dataset.id;
   if (id && id !== state.active && isShown(id)) activate(id);
 });
-mobile.addEventListener('change', () => { barKey = ''; applyLayout(); fitActive(); });
+mobile.addEventListener('change', () => { barKey = null; applyLayout(); fitActive(); });
 
 // ------------------------------------------------------------------ long-term history
 //
