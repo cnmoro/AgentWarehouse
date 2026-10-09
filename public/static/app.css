@@ -813,3 +813,19 @@ body.resizing #main { pointer-events: none; }
 .ssh-error { padding: 8px 12px; border-radius: 6px; background: #3a1f1f; border: 1px solid #6b3230; color: #ffd6d3; font-size: 13px; }
 .ssh-error[hidden] { display: none; }
 .ssh-form-actions { display: flex; gap: 8px; }
+
+/* Sidebar tools (find, SSH, desktop, files): a row of labelled buttons under the title that
+   wraps by width, and drops the labels when the sidebar is too narrow for them. */
+.head-tools { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; padding: 0 12px 10px 14px; }
+.head-tools-wrap { container-type: inline-size; }
+.head-tools-wrap:not(:has(.tool-btn:not([hidden]))) { display: none; }
+.tool-btn {
+  display: flex; align-items: center; justify-content: center; gap: 6px; height: 28px; min-width: 0; padding: 0 6px;
+  border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); font-size: 12px; line-height: 1;
+}
+.tool-btn:hover, .tool-btn:focus-visible, .tool-btn[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); outline: none; }
+.tool-btn svg { flex: none; }
+.tool-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-btn[hidden] { display: none; }
+@container (min-width: 330px) { .head-tools { grid-template-columns: repeat(4, 1fr); } }
+@container (max-width: 150px) { .tool-btn span { display: none; } .head-tools { grid-template-columns: repeat(4, 1fr); } }
