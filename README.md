@@ -9,13 +9,55 @@ Several shells on this machine, open in the browser. Each terminal is a tab in t
 
 ## Setup
 
-Needs Node.js 22.9 or later. The first install compiles node-pty, so you also need `make`, `g++` and `python3`.
+### What you need on the machine
+
+| Needed for | What | Debian/Ubuntu package |
+| --- | --- | --- |
+| Everything | Node.js 22.9 or later, npm | `nodejs` (from NodeSource or nvm if the distro's is older) |
+| Installing (node-pty is compiled) | `make`, `g++`, `python3` | `build-essential python3` |
+| Login shells | `bash` (history handling is bash-specific) | `bash` |
+| Default network binding | [Tailscale](https://tailscale.com/), up and logged in (or set `HOST`) | `tailscale` |
+| Service mode | systemd user services, `loginctl enable-linger` | |
+| **SSH connections** | OpenSSH client (`ssh`, `ssh-keygen`) | `openssh-client` |
+| SSH with `.ppk` keys | `puttygen` | `putty-tools` |
+| **Desktop (VNC)** | a VNC server running as the same user, such as TigerVNC's `Xvnc`, with a desktop session | `tigervnc-standalone-server tigervnc-common tigervnc-tools` plus a desktop (`xfce4`, `dbus-x11`) |
+| Explorer thumbnails of videos and images | `ffmpeg` | `ffmpeg` |
+| Explorer "Trash" | `gio` | `libglib2.0-bin` (usually already there) |
+
+Only Node and the build tools are required to start; each other row switches on one feature, and the page hides or explains a feature whose tool is missing. noVNC, xterm.js, marked and DOMPurify come from npm, so they need nothing more.
+
+```sh
+sudo apt install build-essential python3 openssh-client putty-tools ffmpeg \
+  tigervnc-standalone-server tigervnc-common tigervnc-tools xfce4 dbus-x11
+```
+
+### Install
 
 ```sh
 npm install
 npm run set-user        # prompts for email and password (min. 12 characters)
 npm start
 ```
+
+### Setting up the Desktop (VNC)
+
+The Desktop button needs a VNC server of your own user to connect to; this app only relays to it (it does not start one). One-time setup:
+
+```sh
+vncpasswd                     # creates ~/.vnc/passwd; the app reads it and logs you in
+cat > ~/.vnc/xstartup <<'EOT'
+#!/bin/sh
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+[ -x /usr/bin/dbus-launch ] && eval `dbus-launch --sh-syntax --exit-with-session`
+vncconfig -nowin &            # lets copy and paste work between the page and the desktop
+exec startxfce4
+EOT
+chmod +x ~/.vnc/xstartup
+vncserver :1 -localhost yes -geometry 1920x1080     # display :1 listens on port 5901
+```
+
+The app finds the running `Xvnc` by itself (or set `VNC_PORT`, `VNC_HOST`, `VNC_PASSWORD_FILE`). `-localhost yes` keeps the VNC port closed to the network, so the only way in is through this page and its login. Without `vncconfig` running, pasting into the desktop and copying out of it will not work. Do not probe the VNC port with scripts: TigerVNC blocks an address for a while after several connections that end before login.
 
 With no `HOST` set, the server binds only to this machine's Tailscale IPv4 address on port 7681, e.g. `http://100.x.y.z:7681`. Other networks can't reach it. If Tailscale is not up yet, the server exits and systemd retries.
 
@@ -74,7 +116,7 @@ The SSH button in the sidebar opens a list of saved connections (name, host,
 port, user, and a password and/or a key file): create, edit, delete, and
 **Connect** opens a new session that is already logged in, with ssh started from
 this machine. Drop a `.pem`, `.ppk` (PuTTY keys are converted to OpenSSH format
-with `puttygen`, from the `putty-tools` package) or OpenSSH key on the form;
+with `puttygen`, from the `putty-tools` package: `sudo apt install putty-tools openssh-client`) or OpenSSH key on the form;
 Windows line endings and a missing final newline are fixed, public keys are
 refused, and a passphrase can be saved too. Everything is stored on the server
 in `DATA_DIR`: `ssh.json` (passwords and passphrases encrypted with the random
@@ -198,7 +240,7 @@ npm run set-user -- --remove someone@example.com     # remove a user
 
 ## Configuration
 
-See `.env.example`: `PORT`, `HOST`, `ALLOWED_HOSTS`, `TRUST_PROXY`, `SESSION_TTL_HOURS`, `SESSION_IDLE_HOURS`, `SCROLLBACK`, `HISTORY_LINES`, `HISTORY_MB`.
+See `.env.example`: `PORT`, `HOST`, `ALLOWED_HOSTS`, `TRUST_PROXY`, `SESSION_TTL_HOURS`, `SESSION_IDLE_HOURS`, `SCROLLBACK`, `HISTORY_LINES`, `HISTORY_MB`, `VNC_PORT`, `VNC_HOST`, `VNC_PASSWORD_FILE`, `DATA_DIR`.
 
 ## Layout
 
@@ -207,6 +249,10 @@ server.js            HTTP routes, login, WebSocket protocol
 lib/auth.js          password hashing, sessions, login throttling
 lib/terminals.js     pty + headless mirror per tab, persistence of tab list
 lib/history.js       on-disk history beyond the scrollback
+lib/files.js         file explorer API
+lib/vnc.js           WebSocket relay to the VNC server
+lib/ssh.js           saved SSH connections and key conversion
+bin/, scripts/wt-ssh.js   wt-ssh and the askpass helper on every terminal's PATH
 scripts/set-user.js  create, update, or remove logins
 public/              login page and the app (plain JS, no build step)
 data/                users.json, tabs.json, history/ (git-ignored)
