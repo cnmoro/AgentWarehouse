@@ -1110,12 +1110,9 @@ function activateSession(gid) {
   activate(members.some((t) => t.id === last) ? last : members[0].id);
 }
 
+// The browser tab always says the same thing, whatever session is open.
 function updateTitle() {
-  const t = state.tabs.find((x) => x.id === state.active);
-  if (!t) { document.title = 'Web Terminal'; return; }
-  const g = sessions().find((x) => x.id === sessionOf(t.id));
-  const name = !hasSessions() || !g ? t.name : tabsOf(g.id).length > 1 ? `${g.name} · ${t.name}` : g.name;
-  document.title = `${name} · Web Terminal`;
+  if (document.title !== 'Agent Warehouse') document.title = 'Agent Warehouse';
 }
 
 function renderTabs() {
