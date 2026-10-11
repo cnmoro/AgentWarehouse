@@ -21,7 +21,7 @@ Several shells on this machine, open in the browser. Each terminal is a tab in t
 | **SSH connections** | OpenSSH client (`ssh`, `ssh-keygen`) | `openssh-client` |
 | SSH with `.ppk` keys | `puttygen` | `putty-tools` |
 | **Desktop (VNC)** | a VNC server running as the same user, such as TigerVNC's `Xvnc`, with a desktop session | `tigervnc-standalone-server tigervnc-common tigervnc-tools` plus a desktop (`xfce4`, `dbus-x11`) |
-| Explorer thumbnails of videos and images | `ffmpeg` | `ffmpeg` |
+| Explorer thumbnails of videos and images, and the Desktop's **Fluid** mode | `ffmpeg` (with `x11grab` and `libx264`; `libvpx-vp9` and `libsvtav1` add the VP9 and AV1 choices; an NVIDIA GPU with `h264_nvenc` makes H.264 almost free) | `ffmpeg` |
 | Explorer "Trash" | `gio` | `libglib2.0-bin` (usually already there) |
 
 Only Node and the build tools are required to start; each other row switches on one feature, and the page hides or explains a feature whose tool is missing. noVNC, xterm.js, marked and DOMPurify come from npm, so they need nothing more.
@@ -161,9 +161,20 @@ Everything runs as the server's user, so the file browser can reach exactly what
 
 Markdown files (`.md`) are drawn in the preview (headings, lists, tables, code, pictures next to the file); untick *Render* to read the raw text. The HTML is sanitized (marked + DOMPurify), so scripts in a file never run.
 
-### Desktop (VNC)
+### Desktop
 
-If this machine runs a VNC server (found automatically: the user's own `Xvnc`, or `VNC_PORT`; `VNC_HOST` and `VNC_PASSWORD_FILE` are the other settings), a monitor button at the top of the sidebar opens the desktop in the page, using noVNC. The server relays the browser's WebSocket (`/vnc`, signed-in sessions only, three at a time) to the VNC port, and does the VNC password step itself from `~/.vnc/passwd`, so there is nothing more to type; if that file cannot be read, noVNC asks for the VNC password instead.
+A monitor button in the sidebar opens the desktop of this machine's VNC server in the page. There are two ways to show it; the first box of the Desktop panel's header switches between them (the choice is remembered):
+
+- **Fluid (video)**, the default when the server can do it: `ffmpeg` captures the VNC server's screen (`x11grab`), encodes it as video (**H.264**, VP9 or AV1; H.264 goes through the NVIDIA GPU when there is one, else `libx264`), and the page plays it with Media Source Extensions, so the browser decodes it in hardware. It reaches the full 60 fps (the boxes next to the mode set the codec, 30/45/60 fps and the bit rate; the status line shows the frame rate that is really being drawn). A stream needs about 4–12 Mbit/s and, with the GPU, roughly a tenth of a CPU core. The video starts only while the panel is open and the page is visible, and is captured again by itself whenever the desktop changes size. It only works for this machine's own desktop (not for another server typed into the boxes).
+- **VNC**, the classic mode (noVNC): works with any VNC server. The *Quality* box trades sharpness for bandwidth (fast, balanced, high, best: JPEG quality 4/6/8/9 at the lowest compression levels, which keep the server's CPU use down). Here the frame rate is whatever the VNC server and the browser's decoder can manage: about 60 updates a second for a window-sized animation, less for a full 4K screen.
+
+In both modes the keyboard and the mouse (buttons, wheel, every key and shortcut), the clipboard and the desktop's size go through the VNC connection, so Fluid mode has the same input as VNC mode. In full screen the browser is asked to pass keys it normally keeps (Esc, Alt+Tab, Ctrl+W...) to the desktop (Chrome and Edge, over HTTPS or localhost).
+
+The Fluid mode changes nothing on the VNC server. Its settings are read from the environment: `VNC_DISPLAY` (the X display to capture, e.g. `:1`; by default the one of the Xvnc on the VNC port).
+
+#### VNC server and noVNC
+
+If this machine runs a VNC server (found automatically: the user's own `Xvnc`, or `VNC_PORT`; `VNC_HOST` and `VNC_PASSWORD_FILE` are the other settings), the monitor button appears. noVNC runs in the page. The server relays the browser's WebSocket (`/vnc`, signed-in sessions only, three at a time) to the VNC port, and does the VNC password step itself from `~/.vnc/passwd`, so there is nothing more to type; if that file cannot be read, noVNC asks for the VNC password instead.
 
 - **Which server:** the two boxes at the top (host and port) pick the VNC server; empty means this machine's own. Type any address (`192.168.1.20` and `5900`, or a name; a port below 100 is a display number, so `1` means 5901) and press Connect. Another server asks for its VNC password in the page; this machine's own is logged in for you. Connecting to this machine by its network address works too, and arrives from a different address than `127.0.0.1`, which gets around a block at the VNC server. The choice is remembered. If the VNC server cannot be reached or refuses the login, the page says why.
 - **Resize desktop with window:** while the switch is on, the desktop's resolution follows the size of the panel (resize the window, drag the sidebar). It is off by default, because it changes the real desktop for everyone looking at it.
@@ -240,7 +251,7 @@ npm run set-user -- --remove someone@example.com     # remove a user
 
 ## Configuration
 
-See `.env.example`: `PORT`, `HOST`, `ALLOWED_HOSTS`, `TRUST_PROXY`, `SESSION_TTL_HOURS`, `SESSION_IDLE_HOURS`, `SCROLLBACK`, `HISTORY_LINES`, `HISTORY_MB`, `VNC_PORT`, `VNC_HOST`, `VNC_PASSWORD_FILE`, `DATA_DIR`.
+See `.env.example`: `PORT`, `HOST`, `ALLOWED_HOSTS`, `TRUST_PROXY`, `SESSION_TTL_HOURS`, `SESSION_IDLE_HOURS`, `SCROLLBACK`, `HISTORY_LINES`, `HISTORY_MB`, `VNC_PORT`, `VNC_HOST`, `VNC_PASSWORD_FILE`, `VNC_DISPLAY`, `DATA_DIR`.
 
 ## Layout
 
@@ -251,6 +262,7 @@ lib/terminals.js     pty + headless mirror per tab, persistence of tab list
 lib/history.js       on-disk history beyond the scrollback
 lib/files.js         file explorer API
 lib/vnc.js           WebSocket relay to the VNC server
+lib/stream.js        Fluid desktop: ffmpeg screen capture to video over a WebSocket
 lib/ssh.js           saved SSH connections and key conversion
 bin/, scripts/wt-ssh.js   wt-ssh and the askpass helper on every terminal's PATH
 scripts/set-user.js  create, update, or remove logins

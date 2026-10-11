@@ -30,6 +30,13 @@ const Vnc = (() => {
     poll: 0, tries: 0, local: true, remoteClip: '',
     // Which VNC server: empty = the one on this machine.
     host: '', port: '',
+    // "Fluid": the screen as video (ffmpeg on the server, played here); input still goes through VNC.
+    fluidOk: false, codecs: [], gpu: false, stream: null,
+    mode: storage('wt.vncMode') || 'fluid',
+    codec: storage('wt.vncCodec') || 'h264',
+    fps: Number(storage('wt.vncFps')) || 60,
+    mbps: Number(storage('wt.vncMbps')) || 12,
+    quality: storage('wt.vncQuality') || 'balanced',
   };
   try { const t = JSON.parse(storage('wt.vncTarget') || '{}'); v.host = String(t.host || ''); v.port = String(t.port || ''); } catch { /* none saved */ }
   const el = {};
@@ -41,6 +48,19 @@ const Vnc = (() => {
     root.innerHTML = `
       <header class="vnc-head">
         <div class="vnc-title"><span class="vnc-dot" aria-hidden="true"></span><b>Desktop</b><span class="vnc-status" role="status"></span></div>
+        <span class="vnc-modes" hidden>
+          <select class="vnc-mode" aria-label="Streaming mode" title="Fluid: the screen is streamed as video (up to 60 fps). VNC: classic region updates, works with any VNC server.">
+            <option value="fluid">Fluid (video)</option><option value="vnc">VNC</option>
+          </select>
+          <span class="vnc-fluidopts">
+            <select class="vnc-codec" aria-label="Video codec" title="Video codec. H.264 is the lightest (the GPU encodes it when there is one); VP9 and AV1 need more CPU."></select>
+            <select class="vnc-fps" aria-label="Frames per second" title="Frames per second"><option value="30">30 fps</option><option value="45">45 fps</option><option value="60">60 fps</option></select>
+            <select class="vnc-mbps" aria-label="Bit rate" title="Video bit rate: higher is sharper and uses more network"><option value="4">4 Mbps</option><option value="8">8 Mbps</option><option value="12">12 Mbps</option><option value="20">20 Mbps</option><option value="35">35 Mbps</option></select>
+          </span>
+        </span>
+        <select class="vnc-quality" aria-label="VNC image quality" title="VNC image quality: lower is faster on a slow link, higher is sharper">
+          <option value="fast">Quality: fast</option><option value="balanced">Quality: balanced</option><option value="high">Quality: high</option><option value="best">Quality: best</option>
+        </select>
         <form class="vnc-target" title="Which VNC server to show. Leave both empty for the desktop of this machine; a port below 100 is a display number (1 means 5901).">
           <input class="vnc-host" type="text" placeholder="this machine" aria-label="VNC server address" spellcheck="false" autocomplete="off" size="16">
           <span aria-hidden="true">:</span>
@@ -68,8 +88,19 @@ const Vnc = (() => {
     Object.assign(el, {
       root, status: q('.vnc-status'), dot: q('.vnc-dot'), auto: q('.vnc-auto'), preset: q('.vnc-preset'), fit: q('.vnc-fit'),
       fitLabel: q('.vnc-fitlabel'), screen: q('.vnc-screen'), msg: q('.vnc-msg'),
-      host: q('.vnc-host'), port: q('.vnc-port'), target: q('.vnc-target'),
+      host: q('.vnc-host'), port: q('.vnc-port'), target: q('.vnc-target'), body: q('.vnc-body'),
+      modes: q('.vnc-modes'), mode: q('.vnc-mode'), fluidOpts: q('.vnc-fluidopts'), codec: q('.vnc-codec'), fps: q('.vnc-fps'), mbps: q('.vnc-mbps'), quality: q('.vnc-quality'),
     });
+    el.mode.value = v.mode; el.fps.value = String(v.fps); el.mbps.value = String(v.mbps); el.quality.value = v.quality;
+    fillCodecs();
+    syncModeUI();
+    el.mode.addEventListener('change', () => { v.mode = el.mode.value; storage('wt.vncMode', v.mode); reconnect(); });
+    el.codec.addEventListener('change', () => { v.codec = el.codec.value; storage('wt.vncCodec', v.codec); restartStream(); });
+    el.fps.addEventListener('change', () => { v.fps = Number(el.fps.value); storage('wt.vncFps', String(v.fps)); restartStream(); });
+    el.mbps.addEventListener('change', () => { v.mbps = Number(el.mbps.value); storage('wt.vncMbps', String(v.mbps)); restartStream(); });
+    el.quality.addEventListener('change', () => { v.quality = el.quality.value; storage('wt.vncQuality', v.quality); applyQuality(); });
+    document.addEventListener('fullscreenchange', onFullscreen);
+    document.addEventListener('visibilitychange', onVisibility);
     el.host.value = v.host;
     el.port.value = v.port;
     el.target.hidden = !v.targetOk;
@@ -125,8 +156,9 @@ const Vnc = (() => {
   function syncControls() {
     el.auto.checked = v.auto;
     el.fit.checked = v.fit;
-    el.fit.disabled = v.auto; // the desktop already is the size of the panel
-    el.fitLabel.classList.toggle('off', v.auto);
+    const noFit = v.auto || v.fluidNow;
+    el.fit.disabled = noFit; // the desktop already is the size of the panel (or is video, which always fits)
+    el.fitLabel.classList.toggle('off', noFit);
   }
 
   const setStatus = (text, state) => {
@@ -178,6 +210,11 @@ const Vnc = (() => {
     v.shown = v.host || v.port ? `${v.host || 'this machine'}${v.port ? `:${v.port}` : ''}` : '';
     const rfb = new v.RFB(el.screen, `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/vnc${query}`, { shared: true });
     v.rfb = rfb;
+    const fluid = fluidActive();
+    v.fluidNow = fluid;
+    el.screen.classList.toggle('vnc-fluid', fluid);
+    syncModeUI();
+    if (fluid) { patchTiny(); rfb._sock._wtTiny = true; }
     rfb.background = '#0b0d11';
     rfb.focusOnClick = true;
     applySizing();
@@ -198,6 +235,7 @@ const Vnc = (() => {
         }, 100);
       }
       startPoll();
+      if (fluid) startStream(); else applyQuality();
     });
     let failure = ''; // why the server refused us, when it said
     rfb.addEventListener('disconnect', (e) => {
@@ -264,6 +302,7 @@ const Vnc = (() => {
 
   function disconnect() {
     stopPoll();
+    stopStream();
     if (v.rfb) {
       const r = v.rfb;
       v.rfb = null;
@@ -281,7 +320,7 @@ const Vnc = (() => {
     const rfb = v.rfb;
     if (!rfb) return;
     rfb.resizeSession = v.auto;
-    rfb.scaleViewport = !v.auto && v.fit;
+    rfb.scaleViewport = !v.auto && (v.fit || v.fluidNow); // the video is always scaled to fit
     rfb.clipViewport = false;
     showCurrentSize();
   }
@@ -333,10 +372,282 @@ const Vnc = (() => {
     v.poll = setInterval(() => {
       const s = currentSize();
       showCurrentSize();
-      if (s && v.rfb) setStatus(`${v.shown ? `${v.shown} · ` : ''}${s.w} × ${s.h}${v.auto ? ' · follows the window' : ''}`, 'ok');
+      const st = v.stream;
+      if (st && s && st.size && (st.size.w !== s.w || st.size.h !== s.h)) { st.size = s; restartStream(250); } // the desktop changed size: capture again
+      const live = st && st.fps ? ` · ${st.fps} fps ${CODEC_NAME[v.codec]}` : '';
+      if (s && v.rfb) setStatus(`${v.shown ? `${v.shown} · ` : ''}${s.w} × ${s.h}${v.auto ? ' · follows the window' : ''}${v.fluidNow ? (live || ' · video…') : ''}`, 'ok');
     }, 500);
   }
   function stopPoll() { clearInterval(v.poll); v.poll = 0; }
+
+  // ---------------------------------------------------------------- modes and quality
+
+  const CODEC_NAME = { h264: 'H.264', vp9: 'VP9', av1: 'AV1' };
+  // Whether the screen can be shown as video: the server can encode it, this browser can play it,
+  // and the desktop is this machine's own (the video is taken from its display).
+  const mediaOk = !!(window.MediaSource && MediaSource.isTypeSupported && MediaSource.isTypeSupported('video/mp4; codecs="avc1.64001f"'));
+  const fluidAvailable = () => v.fluidOk && mediaOk && v.local && !v.host && !v.port;
+  const fluidActive = () => v.mode === 'fluid' && fluidAvailable();
+
+  function fillCodecs() {
+    if (!el.codec) return;
+    const list = v.codecs.length ? v.codecs : ['h264'];
+    if (!list.includes(v.codec)) v.codec = list[0];
+    el.codec.innerHTML = list.map((c) => `<option value="${c}">${CODEC_NAME[c]}${c === 'h264' && v.gpu ? ' (GPU)' : ''}</option>`).join('');
+    el.codec.value = v.codec;
+  }
+  function syncModeUI() {
+    if (!el.modes) return;
+    const avail = fluidAvailable();
+    el.modes.hidden = !avail;
+    el.fluidOpts.hidden = v.mode !== 'fluid';
+    el.quality.hidden = fluidActive();
+  }
+  function reconnect() { disconnect(); connect(); }
+
+  // JPEG quality and compression level of VNC's image updates. A higher compression level costs
+  // the server CPU time, which is what limits the frame rate at full speed, so the levels stay low.
+  const QUALITY = { fast: [4, 1], balanced: [6, 1], high: [8, 1], best: [9, 0] };
+  function applyQuality() {
+    const r = v.rfb;
+    if (!r || v.fluidNow) return;
+    const [q, c] = QUALITY[v.quality] || QUALITY.balanced;
+    r.qualityLevel = q;
+    r.compressionLevel = c;
+  }
+
+  // In Fluid mode the VNC connection only carries input (keys, mouse, clipboard) and the
+  // desktop's size; the image is the video. So noVNC is made to ask for a single pixel instead
+  // of the whole screen, and the server has next to nothing to send.
+  function patchTiny() {
+    const M = v.RFB.messages;
+    if (M._wtTiny) return;
+    M._wtTiny = true;
+    const request = M.fbUpdateRequest;
+    const cont = M.enableContinuousUpdates;
+    M.fbUpdateRequest = function (sock, incremental, x, y, w, h) {
+      return sock._wtTiny ? request.call(this, sock, incremental, 0, 0, 1, 1) : request.call(this, sock, incremental, x, y, w, h);
+    };
+    M.enableContinuousUpdates = function (sock, enable, x, y, w, h) {
+      return sock._wtTiny ? cont.call(this, sock, enable, 0, 0, 1, 1) : cont.call(this, sock, enable, x, y, w, h);
+    };
+  }
+
+  // ---------------------------------------------------------------- the video
+
+  const ascii = (b, o) => String.fromCharCode(b[o], b[o + 1], b[o + 2], b[o + 3]);
+  const find = (b, tag) => { for (let i = 0; i + 4 <= b.length; i++) if (ascii(b, i) === tag) return i; return -1; };
+  // The codec string for MediaSource, read from the stream's init segment.
+  function codecString(init) {
+    const hex = (n, d = 2) => n.toString(16).padStart(d, '0');
+    let i;
+    if ((i = find(init, 'avcC')) >= 0) return `avc1.${hex(init[i + 5])}${hex(init[i + 6])}${hex(init[i + 7])}`;
+    if ((i = find(init, 'vpcC')) >= 0) return `vp09.${String(init[i + 8]).padStart(2, '0')}.${String(init[i + 9]).padStart(2, '0')}.${String(init[i + 10] >> 4).padStart(2, '0')}`;
+    if ((i = find(init, 'av1C')) >= 0) return `av01.${init[i + 5] >> 5}.${String(init[i + 5] & 31).padStart(2, '0')}${init[i + 6] & 0x80 ? 'H' : 'M'}.${String(init[i + 6] & 0x40 ? (init[i + 6] & 0x20 ? 12 : 10) : 8).padStart(2, '0')}`;
+    return '';
+  }
+  const concat = (parts) => {
+    if (parts.length === 1) return parts[0];
+    const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+    let o = 0;
+    for (const p of parts) { out.set(p, o); o += p.length; }
+    return out;
+  };
+
+  function startStream() {
+    stopStream();
+    if (!v.open || !v.rfb || !fluidActive()) return;
+    showMsg('');
+    const video = document.createElement('video');
+    video.className = 'vnc-video';
+    video.muted = true;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.disablePictureInPicture = true;
+    el.body.append(video);
+    const st = { video, ws: null, ms: null, sb: null, url: '', buf: new Uint8Array(0), init: [], moof: null, queue: [], fps: 0, frames: 0, closed: false, size: currentSize(), timers: [], mime: '' };
+    v.stream = st;
+    const q = new URLSearchParams({ codec: v.codec, fps: String(v.fps), mbps: String(v.mbps) });
+    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/vstream?${q}`);
+    ws.binaryType = 'arraybuffer';
+    st.ws = ws;
+    ws.onmessage = (e) => {
+      if (st.closed) return;
+      if (typeof e.data === 'string') {
+        try {
+          const m = JSON.parse(e.data);
+          if (m.t === 'error') streamFailed(m.message);
+          else if (m.t === 'ended' && v.stream === st) captureEnded();
+        } catch { /* not ours */ }
+        return;
+      }
+      feed(st, new Uint8Array(e.data));
+    };
+    ws.onclose = () => { if (!st.closed && v.stream === st) setTimeout(() => { if (!st.closed && v.stream === st) streamFailed('The video connection closed.'); }, 200); };
+    ws.onerror = () => {};
+    // Keep the video over the canvas that noVNC resizes, and count frames.
+    const sync = () => syncVideo(st);
+    st.timers.push(setInterval(sync, 250), setInterval(() => liveEdge(st), 100));
+    const ro = new ResizeObserver(sync);
+    ro.observe(el.body);
+    st.ro = ro;
+    let last = performance.now();
+    const tick = (now) => {
+      if (st.closed) return;
+      st.frames++;
+      if (now - last >= 1000) { st.fps = Math.round((st.frames * 1000) / (now - last)); st.frames = 0; last = now; }
+      video.requestVideoFrameCallback(tick);
+    };
+    if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(tick);
+    sync();
+  }
+
+  function syncVideo(st) {
+    const c = el.screen.querySelector('canvas');
+    if (!c || st.closed) return;
+    const b = el.body.getBoundingClientRect();
+    const r = c.getBoundingClientRect();
+    Object.assign(st.video.style, { left: `${r.left - b.left}px`, top: `${r.top - b.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+  }
+
+  // Splits what arrives into MP4 boxes: ftyp and moov make the init segment; each moof + mdat is one frame.
+  function feed(st, bytes) {
+    st.buf = st.buf.length ? concat([st.buf, bytes]) : bytes;
+    for (;;) {
+      const b = st.buf;
+      if (b.length < 8) break;
+      const size = ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) >>> 0;
+      if (size < 8) { streamFailed('The video stream is damaged.'); return; }
+      if (b.length < size) break;
+      const type = ascii(b, 4);
+      const box = b.slice(0, size);
+      st.buf = b.subarray(size);
+      if (type === 'ftyp' || type === 'moov') st.init.push(box);
+      else if (type === 'moof') st.moof = box;
+      else if (type === 'mdat' && st.moof) {
+        const seg = concat([st.moof, box]);
+        st.moof = null;
+        if (!st.ms) openSource(st);
+        st.queue.push(seg);
+      }
+    }
+    pump(st);
+  }
+
+  function openSource(st) {
+    const init = concat(st.init);
+    const mime = `video/mp4; codecs="${codecString(init)}"`;
+    st.mime = mime;
+    if (!MediaSource.isTypeSupported(mime)) { streamFailed(`This browser cannot play ${CODEC_NAME[v.codec]} video here. Pick another codec, or use VNC mode.`); return; }
+    const ms = new MediaSource();
+    st.ms = ms;
+    st.url = URL.createObjectURL(ms);
+    st.video.src = st.url;
+    ms.addEventListener('sourceopen', () => {
+      if (st.closed || st.sb) return;
+      try {
+        const sb = ms.addSourceBuffer(mime);
+        st.sb = sb;
+        sb.addEventListener('updateend', () => { pump(st); });
+        sb.addEventListener('error', () => streamFailed('The browser could not play the video.'));
+        sb.appendBuffer(init);
+      } catch (err) { streamFailed(`The browser could not play the video (${err.message}).`); }
+    }, { once: true });
+  }
+
+  function pump(st) {
+    const sb = st.sb;
+    if (st.closed || !sb || sb.updating || !st.queue.length) return;
+    try {
+      sb.appendBuffer(concat(st.queue.splice(0, st.queue.length)));
+    } catch (err) {
+      if (err.name === 'QuotaExceededError') { trim(st, true); return; }
+      streamFailed(`The browser could not play the video (${err.message}).`);
+    }
+  }
+
+  function trim(st, hard) {
+    const sb = st.sb, vd = st.video;
+    if (!sb || sb.updating || !vd.buffered.length) return;
+    const start = vd.buffered.start(0);
+    if (vd.currentTime - start > (hard ? 0.5 : 3)) { try { sb.remove(start, vd.currentTime - (hard ? 0.2 : 1)); } catch { /* retried later */ } }
+  }
+
+  // Stay at the live edge: a player left alone would drift behind by whatever it buffered.
+  function liveEdge(st) {
+    const vd = st.video;
+    if (st.closed || !st.sb || !vd.buffered.length) return;
+    const end = vd.buffered.end(vd.buffered.length - 1);
+    if (vd.paused) vd.play().catch(() => {});
+    const lag = end - vd.currentTime;
+    if (lag > 0.5 || vd.currentTime < vd.buffered.start(0)) vd.currentTime = Math.max(vd.buffered.start(0), end - 0.03);
+    else vd.playbackRate = lag > 0.15 ? 1.15 : lag > 0.08 ? 1.05 : 1;
+    if (!st.trimmed || performance.now() - st.trimmed > 2000) { st.trimmed = performance.now(); trim(st, false); }
+    pump(st);
+  }
+
+  function stopStream() {
+    const st = v.stream;
+    if (!st) return;
+    v.stream = null;
+    st.closed = true;
+    st.timers.forEach(clearInterval);
+    st.ro?.disconnect();
+    try { st.ws.close(); } catch { /* closed */ }
+    try { st.video.removeAttribute('src'); st.video.load(); } catch { /* gone */ }
+    if (st.url) URL.revokeObjectURL(st.url);
+    st.video.remove();
+  }
+
+  let restartTimer = 0;
+  function restartStream(delay = 0) {
+    if (!v.stream && !fluidActive()) return;
+    clearTimeout(restartTimer);
+    restartTimer = setTimeout(() => { if (v.open && v.rfb && fluidActive()) startStream(); }, delay);
+  }
+
+  // The server's capture ended by itself (the desktop was resized): start it again, unless that keeps happening.
+  const restarts = [];
+  function captureEnded() {
+    const now = Date.now();
+    restarts.push(now);
+    while (restarts.length && now - restarts[0] > 10000) restarts.shift();
+    stopStream();
+    if (restarts.length > 4) return streamFailed('The screen capture keeps stopping.', true);
+    restartStream(300);
+  }
+
+  function streamFailed(message, again = false) {
+    if (!v.stream && !again) return;
+    stopStream();
+    setStatus('video stopped', 'bad');
+    showMsg('', (box) => {
+      const p = document.createElement('p');
+      p.textContent = message || 'The video stopped.';
+      const again = document.createElement('button');
+      again.className = 'primary';
+      again.textContent = 'Try again';
+      again.onclick = () => { showMsg(''); startStream(); };
+      const classic = document.createElement('button');
+      classic.textContent = 'Use VNC mode';
+      classic.style.marginLeft = '8px';
+      classic.onclick = () => { v.mode = 'vnc'; storage('wt.vncMode', 'vnc'); el.mode.value = 'vnc'; reconnect(); };
+      box.append(p, again, classic);
+    });
+  }
+
+  // Full screen: ask the browser to hand over keys it keeps for itself (Esc, Alt+Tab, Ctrl+W...) where it can.
+  function onFullscreen() {
+    if (!navigator.keyboard) return;
+    if (document.fullscreenElement === el.root) navigator.keyboard.lock?.().catch(() => {});
+    else navigator.keyboard.unlock?.();
+  }
+  // A hidden tab does not need a video stream.
+  function onVisibility() {
+    if (!v.open || !v.fluidNow) return;
+    if (document.hidden) stopStream();
+    else if (v.rfb && !v.stream) startStream();
+  }
 
   // ---------------------------------------------------------------- clipboard
 
@@ -472,6 +783,16 @@ const Vnc = (() => {
     if (el.target) el.target.hidden = !on;
   }
 
+  // The server's list of what it can stream, e.g. "vnc-fluid:h264+vp9+av1+gpu".
+  function setFluid(feature) {
+    const parts = feature ? feature.slice('vnc-fluid:'.length).split('+') : [];
+    v.fluidOk = parts.length > 0;
+    v.gpu = parts.includes('gpu');
+    v.codecs = parts.filter((c) => CODEC_NAME[c]);
+    fillCodecs();
+    syncModeUI();
+  }
+
   function setAvailable(on) {
     v.available = on;
     for (const b of document.querySelectorAll('.vnc-btn')) b.hidden = !on;
@@ -480,5 +801,5 @@ const Vnc = (() => {
 
   for (const b of document.querySelectorAll('.vnc-btn')) b.addEventListener('click', () => (v.open ? close() : open()));
 
-  return { open, close, setAvailable, setLocal, setTargetSupport, isOpen: () => v.open };
+  return { open, close, setAvailable, setLocal, setTargetSupport, setFluid, isOpen: () => v.open };
 })();

@@ -157,6 +157,7 @@ function connect() {
           Files.setAvailable(Array.isArray(msg.features) && msg.features.includes('files'));
         }
         if (typeof Vnc !== 'undefined') {
+          Vnc.setFluid(Array.isArray(msg.features) ? msg.features.find((f) => f.startsWith('vnc-fluid:')) : '');
           Vnc.setLocal(Array.isArray(msg.features) && msg.features.includes('vnc-local'));
           if (typeof Ssh !== 'undefined') Ssh.setAvailable(Array.isArray(msg.features) && msg.features.includes('ssh'));
           Vnc.setTargetSupport(Array.isArray(msg.features) && msg.features.includes('vnc-target'));

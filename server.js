@@ -10,6 +10,7 @@ const { TerminalManager, SCROLLBACK } = require('./lib/terminals');
 const files = require('./lib/files');
 const ssh = require('./lib/ssh');
 const vnc = require('./lib/vnc');
+const vstream = require('./lib/stream');
 
 // Configuration errors exit with 78 (EX_CONFIG); the systemd unit does not
 // restart on that code, since retrying cannot help.
@@ -169,7 +170,7 @@ app.use((req, res, next) => {
 
 app.use((req, res, next) => {
   res.setHeader('Content-Security-Policy',
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; " +
     "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -274,6 +275,8 @@ const clients = new Set();
 // The desktop: noVNC's WebSocket, relayed to the VNC server (lib/vnc.js).
 const vncWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
 const vncOpen = new Map(); // session id -> connections
+const streamOpen = new Map(); // session id -> video streams
+let streamsTotal = 0;
 
 server.on('upgrade', (req, socket, head) => {
   socket.on('error', () => {});
@@ -281,7 +284,7 @@ server.on('upgrade', (req, socket, head) => {
   let route = null;
   try {
     const pathname = new URL(req.url, 'http://x').pathname;
-    route = pathname === '/vnc' ? 'vnc' : pathname === '/ws' ? 'ws' : null;
+    route = pathname === '/vnc' ? 'vnc' : pathname === '/vstream' ? 'vstream' : pathname === '/ws' ? 'ws' : null;
     const ok = route && allowedHost(req) && sameOrigin(req);
     session = ok ? sessionFrom(req) : null;
   } catch (err) {
@@ -290,6 +293,24 @@ server.on('upgrade', (req, socket, head) => {
   if (!session) {
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
     return socket.destroy();
+  }
+  if (route === 'vstream') {
+    const opts = vstream.parseQuery(req.url);
+    if (!opts || !vstream.info().ok) {
+      socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+      return socket.destroy();
+    }
+    if ((streamOpen.get(session.id) || 0) >= 2 || streamsTotal >= vstream.MAX_STREAMS) {
+      socket.write('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n');
+      return socket.destroy();
+    }
+    return vncWss.handleUpgrade(req, socket, head, (ws) => {
+      ws.sessionId = session.id;
+      streamOpen.set(session.id, (streamOpen.get(session.id) || 0) + 1);
+      streamsTotal++;
+      ws.on('close', () => { streamOpen.set(session.id, Math.max(0, (streamOpen.get(session.id) || 1) - 1)); streamsTotal = Math.max(0, streamsTotal - 1); });
+      vstream.stream(ws, session.email, opts);
+    });
   }
   if (route === 'vnc') {
     const target = vnc.parseTarget(req.url);
@@ -403,7 +424,7 @@ function onConnection(ws, session) {
   clients.add(client);
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
-  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, features: ['sessions', 'files', 'view', 'vnc', 'vnc-target', 'ssh', ...(vnc.isUp() ? ['vnc-local'] : [])] });
+  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, features: ['sessions', 'files', 'view', 'vnc', 'vnc-target', 'ssh', ...(vnc.isUp() ? ['vnc-local'] : []), ...(vstream.info().ok ? ['vnc-fluid:' + vstream.info().codecs.join('+') + (vstream.info().nvenc ? '+gpu' : '')] : [])] });
   syncClient(client);
 
   ws.on('message', (raw) => {
@@ -550,6 +571,7 @@ setInterval(() => {
 server.listen(PORT, HOST, () => {
   terminals.start();
   vnc.watch();
+  vstream.probe();
   console.log(`Web terminal listening on http://${HOST.includes(':') ? `[${HOST}]` : HOST}:${PORT}`);
   console.log(`Accepted host names: ${[...ALLOWED_HOSTS].join(', ')}`);
 });
