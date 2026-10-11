@@ -833,7 +833,9 @@ body.resizing #main { pointer-events: none; }
 
 /* Fluid desktop: the video sits over noVNC's (invisible) canvas, which keeps the keyboard and the mouse. */
 .vnc-video { position: absolute; background: #000; pointer-events: none; object-fit: fill; }
-.vnc-fluid canvas { opacity: 0; cursor: none !important; }
+.vnc-fluid canvas { opacity: 0; }
+/* The pointer is the browser's own, in the shape noVNC takes from the desktop (an arrow while the desktop shows none). */
+.vnc-fluid canvas[style*="cursor: none"] { cursor: default !important; }
 .vnc-modes { display: inline-flex; align-items: center; gap: 6px; }
 .vnc-modes[hidden], .vnc-fluidopts[hidden], .vnc-quality[hidden] { display: none; }
 .vnc-fluidopts { display: inline-flex; gap: 6px; }
