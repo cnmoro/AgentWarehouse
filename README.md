@@ -1,11 +1,39 @@
-# Web Terminal
+# Agent Warehouse
 
-Several shells on this machine, open in the browser. Each terminal is a tab in the left sidebar and you can name it. Login is by email and password.
+A web app that keeps all your terminals, remote connections and desktop in one browser tab. Run several real shells (and the coding agents or tools you start in them) on one machine, name them, split the screen, browse files, open saved SSH connections, and drive the machine's graphical desktop at up to 60 fps, from a laptop or a phone. Login is by email and password, and it is meant to sit behind Tailscale.
+
+[![Demo: signing in, switching sessions, split screen, files, SSH connections and the desktop](docs/demo.gif)](docs/demo.mp4)
+
+<sub>The demo above (click it for the full-quality video) is a clean throwaway setup, not a real machine.</sub>
 
 - **Rendering:** [xterm.js](https://xtermjs.org/), the same terminal emulator VS Code uses. `clear`, colors, progress bars, and full-screen TUIs (`htop`, `vim`, `less`) all work.
 - **Shells:** [node-pty](https://github.com/microsoft/node-pty) runs a real login shell for each tab.
 - **Reconnects:** the server keeps a headless xterm.js copy of each screen. If you reload the page, lose the connection, or open a second device, you get the current screen and scrollback back, including terminal modes such as mouse reporting and the scroll region. Programs keep running while no browser is connected.
 - **Flow control:** the browser acknowledges output as it renders it, and the server pauses the program when the browser falls behind. Ctrl+C during a flood of ordinary output (`yes`, a big `cat`) takes effect in well under a second; floods of deliberately expensive escape sequences can take a few seconds on a very large screen. A browser that stops reading for 5 seconds (a sleeping laptop, say) no longer holds the program back; it gets a fresh copy of the screen when it wakes up.
+
+## Tour
+
+<table>
+<tr>
+<td width="50%"><a href="docs/images/sessions.png"><img src="docs/images/sessions.png" alt="Sessions in the sidebar"></a><br><b>Sessions.</b> Every terminal is a named session in the sidebar, with a yellow dot when its screen changed since you last looked. They keep running when you close the page.</td>
+<td width="50%"><a href="docs/images/split-screen.png"><img src="docs/images/split-screen.png" alt="Four terminals in a 2x2 grid"></a><br><b>Split screen.</b> Drag sessions onto the edges of the main area to show up to four at once, and drag the lines between them to resize.</td>
+</tr>
+<tr>
+<td><a href="docs/images/files-thumbnails.png"><img src="docs/images/files-thumbnails.png" alt="File explorer with thumbnails"></a><br><b>Files.</b> An explorer for the machine's own disk with details, list and thumbnail views, previews, uploads, drag and drop, cut/copy/paste.</td>
+<td><a href="docs/images/ssh.png"><img src="docs/images/ssh.png" alt="Saved SSH connections"></a><br><b>SSH connections.</b> Save hosts with a password or key (PuTTY <code>.ppk</code> works), and open each one as a new session with one click.</td>
+</tr>
+<tr>
+<td><a href="docs/images/desktop.png"><img src="docs/images/desktop.png" alt="The Desktop panel in Fluid mode"></a><br><b>Desktop.</b> The machine's virtual desktop in the page. <b>Fluid</b> mode streams video (H.264 or VP9) for up to 60 fps with a low delay; <b>VNC</b> mode works anywhere. Mouse, keyboard, shortcuts and clipboard in both.</td>
+<td><a href="docs/images/files-details.png"><img src="docs/images/files-details.png" alt="File explorer in the details view"></a><br><b>Details view.</b> Sortable columns, a filter box, keyboard navigation like a desktop file manager, and pinned places.</td>
+</tr>
+</table>
+
+On a phone the sidebar becomes a drawer and a key bar adds Esc, Tab, Ctrl and the arrows:
+
+<p>
+<img src="docs/images/phone-sessions.png" alt="Sessions on a phone" width="220">
+<img src="docs/images/phone-terminal.png" alt="A terminal on a phone, with the key bar" width="220">
+</p>
 
 ## Setup
 
@@ -264,6 +292,7 @@ lib/files.js         file explorer API
 lib/vnc.js           WebSocket relay to the VNC server
 lib/stream.js        Fluid desktop: ffmpeg screen capture to video over a WebSocket
 lib/ssh.js           saved SSH connections and key conversion
+docs/               screenshots and the demo video used in this README
 bin/, scripts/wt-ssh.js   wt-ssh and the askpass helper on every terminal's PATH
 scripts/set-user.js  create, update, or remove logins
 public/              login page and the app (plain JS, no build step)
