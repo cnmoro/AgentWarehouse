@@ -73,10 +73,11 @@ const Vnc = (() => {
         <select class="vnc-preset" aria-label="Desktop size" title="Set the desktop to a standard resolution (turns off the resizing with the window)"></select>
         <label class="tool-check vnc-fitlabel" title="Scale the desktop to fit this panel instead of showing it at its own size"><input type="checkbox" class="vnc-fit"> Scale to fit</label>
         <span class="vnc-spacer"></span>
+        <select class="vnc-keys" aria-label="Send a shortcut to the desktop" title="The browser keeps some shortcuts for itself (Ctrl+T, Ctrl+W, Ctrl+N...). Pick one here to send it to the desktop, or use full screen, which passes them on."><option value="">Send key…</option></select>
         <button class="tool-btn" data-v="cad" title="Send Ctrl+Alt+Del to the desktop">Ctrl+Alt+Del</button>
         <button class="tool-btn vnc-getclip" data-v="getclip" title="The desktop copied some text: put it on your clipboard" hidden>Copy from desktop</button>
         <button class="tool-btn" data-v="paste" title="Send the text on your clipboard to the desktop's clipboard (Ctrl+V on the desktop does this by itself)">Paste</button>
-        <button class="tool-btn" data-v="full" title="Full screen">⛶</button>
+        <button class="tool-btn" data-v="full" title="Full screen: the browser then passes Ctrl+T, Ctrl+W, Ctrl+N, Alt+Tab, Esc... to the desktop (Chrome and Edge)">⛶</button>
         <button class="tool-btn" data-v="reconnect" title="Connect again">Reconnect</button>
         <button class="icon-btn" data-v="close" title="Close the desktop" aria-label="Close the desktop">✕</button>
       </header>
@@ -89,7 +90,7 @@ const Vnc = (() => {
       root, status: q('.vnc-status'), dot: q('.vnc-dot'), auto: q('.vnc-auto'), preset: q('.vnc-preset'), fit: q('.vnc-fit'),
       fitLabel: q('.vnc-fitlabel'), screen: q('.vnc-screen'), msg: q('.vnc-msg'),
       host: q('.vnc-host'), port: q('.vnc-port'), target: q('.vnc-target'), body: q('.vnc-body'),
-      modes: q('.vnc-modes'), mode: q('.vnc-mode'), fluidOpts: q('.vnc-fluidopts'), codec: q('.vnc-codec'), fps: q('.vnc-fps'), mbps: q('.vnc-mbps'), quality: q('.vnc-quality'),
+      modes: q('.vnc-modes'), mode: q('.vnc-mode'), fluidOpts: q('.vnc-fluidopts'), codec: q('.vnc-codec'), fps: q('.vnc-fps'), mbps: q('.vnc-mbps'), quality: q('.vnc-quality'), keys: q('.vnc-keys'),
     });
     el.mode.value = v.mode; el.fps.value = String(v.fps); el.mbps.value = String(v.mbps); el.quality.value = v.quality;
     fillCodecs();
@@ -98,6 +99,8 @@ const Vnc = (() => {
     el.codec.addEventListener('change', () => { v.codec = el.codec.value; storage('wt.vncCodec', v.codec); restartStream(); });
     el.fps.addEventListener('change', () => { v.fps = Number(el.fps.value); storage('wt.vncFps', String(v.fps)); restartStream(); });
     el.mbps.addEventListener('change', () => { v.mbps = Number(el.mbps.value); storage('wt.vncMbps', String(v.mbps)); restartStream(); });
+    el.keys.innerHTML += shortcuts().map((k, i) => `<option value="${i}">${k[0]}</option>`).join('');
+    el.keys.addEventListener('change', () => { const i = el.keys.value; el.keys.value = ''; if (i !== '') { sendShortcut(Number(i)); refocusDesktop(); } });
     el.quality.addEventListener('change', () => { v.quality = el.quality.value; storage('wt.vncQuality', v.quality); applyQuality(); });
     document.addEventListener('fullscreenchange', onFullscreen);
     document.addEventListener('visibilitychange', onVisibility);
@@ -531,8 +534,9 @@ const Vnc = (() => {
 
   // Raw stream in: H.264 is split into frames at each access unit delimiter, VP9 and AV1 come in IVF frames.
   function feedRaw(st, msg) {
+    const end = msg.length === 1 && msg[0] === 1; // the server says the frame is complete
     const bytes = msg.subarray(1);
-    st.buf = st.buf.length ? concat([st.buf, bytes]) : bytes;
+    if (!end) st.buf = st.buf.length ? concat([st.buf, bytes]) : bytes;
     if (v.codec === 'h264') {
       for (;;) {
         const b = st.buf;
@@ -542,19 +546,19 @@ const Vnc = (() => {
         st.buf = b.subarray(next);
         wcFrame(st, au);
       }
-      // The server says the frame is complete: no need to wait for the next frame's delimiter to know it.
-      if (msg[0] === 1 && st.buf.length && nextAud(st.buf, 0) === 0) { const au = st.buf; st.buf = new Uint8Array(0); wcFrame(st, au); }
-    } else {
-      if (!st.ivf) { if (st.buf.length < 32) return; st.buf = st.buf.subarray(32); st.ivf = true; }
-      for (;;) {
-        const b = st.buf;
-        if (b.length < 12) break;
-        const size = (b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)) >>> 0;
-        if (b.length < 12 + size) break;
-        const fr = b.slice(12, 12 + size);
-        st.buf = b.subarray(12 + size);
-        wcFrame(st, fr);
-      }
+      // No need to wait for the next frame's delimiter to know this one is whole.
+      if (end && st.buf.length && nextAud(st.buf, 0) === 0) { const au = st.buf; st.buf = new Uint8Array(0); wcFrame(st, au); }
+      return;
+    }
+    if (!st.ivf) { if (st.buf.length < 32) return; st.buf = st.buf.subarray(32); st.ivf = true; }
+    for (;;) {
+      const b = st.buf;
+      if (b.length < 12) break;
+      const size = (b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)) >>> 0;
+      if (b.length < 12 + size) break;
+      const fr = b.slice(12, 12 + size);
+      st.buf = b.subarray(12 + size);
+      wcFrame(st, fr);
     }
   }
   // Where the next access unit delimiter (NAL type 9) starts, counting its zero byte, or -1.
@@ -574,6 +578,7 @@ const Vnc = (() => {
     let key = st.n === 0;
     let codec = '';
     if (v.codec === 'h264') {
+      if (nextAud(data, 0) !== 0) return; // not the start of a frame: never feed the decoder half a frame
       key = hasNal(data, 5) >= 0;
       const sps = hasNal(data, 7);
       if (!st.dec && sps >= 0) codec = `avc1.${[1, 2, 3].map((k) => data[sps + k].toString(16).padStart(2, '0')).join('')}`;
@@ -589,6 +594,19 @@ const Vnc = (() => {
       return;
     }
     wcDecode(st, data, key);
+  }
+
+  // A decoder that stops on a bad frame is started again on a fresh stream; one that keeps failing gives way to the media element.
+  const wcErrors = [];
+  function wcError(st, why) {
+    if (v.stream !== st) return;
+    const now = Date.now();
+    wcErrors.push(now);
+    while (wcErrors.length && now - wcErrors[0] > 20000) wcErrors.shift();
+    if (wcErrors.length > 3) return wcFallback(why);
+    console.warn('[vnc] video decoder error, restarting the stream:', why);
+    stopStream();
+    startStream();
   }
 
   function wcStart(st, codec) {
@@ -608,7 +626,7 @@ const Vnc = (() => {
           ctx.drawImage(frame, 0, 0);
           frame.close();
         },
-        error: (e) => { if (!st.closed) wcFallback(e.message); },
+        error: (e) => { if (!st.closed) wcError(st, e.message); },
       });
       dec.configure(r.config);
       st.dec = dec;
@@ -621,7 +639,7 @@ const Vnc = (() => {
     if (!st.synced) { if (!key) return; st.synced = true; }
     try {
       st.dec.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: Math.round((st.n++ * 1e6) / v.fps), data }));
-    } catch (e) { wcFallback(e.message); }
+    } catch (e) { wcError(st, e.message); }
   }
 
   // Splits what arrives into MP4 boxes: ftyp and moov make the init segment; each moof + mdat is one frame.
@@ -801,6 +819,25 @@ const Vnc = (() => {
     pasteBox.focus({ preventScroll: true });
   }
   function refocusDesktop() { el.screen.querySelector('canvas')?.focus({ preventScroll: true }); }
+
+  // Shortcuts the browser keeps for itself, to send by hand: [label, modifiers, keysym, code].
+  function shortcuts() { return [
+    ['Ctrl+T (new tab)', 'c', 0x74, 'KeyT'], ['Ctrl+Shift+T (reopen tab)', 'cs', 0x54, 'KeyT'],
+    ['Ctrl+W (close tab)', 'c', 0x77, 'KeyW'], ['Ctrl+N (new window)', 'c', 0x6e, 'KeyN'], ['Ctrl+Shift+N (incognito)', 'cs', 0x4e, 'KeyN'],
+    ['Ctrl+Tab (next tab)', 'c', 0xff09, 'Tab'], ['Ctrl+Shift+Tab (previous tab)', 'cs', 0xff09, 'Tab'],
+    ['Ctrl+PgDn (next tab)', 'c', 0xff56, 'PageDown'], ['Ctrl+PgUp (previous tab)', 'c', 0xff55, 'PageUp'],
+    ['Alt+Tab', 'a', 0xff09, 'Tab'], ['Alt+F4', 'a', 0xffc1, 'F4'], ['Super (Meta)', '', 0xffeb, 'MetaLeft'], ['Esc', '', 0xff1b, 'Escape'],
+  ]; }
+  function sendShortcut(i) {
+    const r = v.rfb, sc = shortcuts()[i];
+    if (!r || !sc) return;
+    const [, mods, sym, code] = sc;
+    const held = [['c', 0xffe3, 'ControlLeft'], ['s', 0xffe1, 'ShiftLeft'], ['a', 0xffe9, 'AltLeft']].filter(([m]) => mods.includes(m));
+    for (const [, ks, c] of held) r.sendKey(ks, c, true);
+    r.sendKey(sym, code, true);
+    r.sendKey(sym, code, false);
+    for (const [, ks, c] of held.reverse()) r.sendKey(ks, c, false);
+  }
 
   function tap(letter, { ctrl = false, shift = false } = {}) {
     const r = v.rfb;

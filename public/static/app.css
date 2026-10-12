@@ -839,7 +839,7 @@ body.resizing #main { pointer-events: none; }
 .vnc-modes { display: inline-flex; align-items: center; gap: 6px; }
 .vnc-modes[hidden], .vnc-fluidopts[hidden], .vnc-quality[hidden] { display: none; }
 .vnc-fluidopts { display: inline-flex; gap: 6px; }
-.vnc-mode, .vnc-codec, .vnc-fps, .vnc-mbps, .vnc-quality {
+.vnc-mode, .vnc-codec, .vnc-fps, .vnc-mbps, .vnc-quality, .vnc-keys {
   height: 28px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); font: 12.5px var(--sans);
 }
-.vnc-mode:focus-visible, .vnc-codec:focus-visible, .vnc-fps:focus-visible, .vnc-mbps:focus-visible, .vnc-quality:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.vnc-mode:focus-visible, .vnc-codec:focus-visible, .vnc-fps:focus-visible, .vnc-mbps:focus-visible, .vnc-quality:focus-visible, .vnc-keys:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
