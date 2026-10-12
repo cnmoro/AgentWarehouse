@@ -136,7 +136,7 @@ const GitDiff = (() => {
 
   // ---------------------------------------------------------------- the view
 
-  function create(host, { onClose, onFile, storage }) {
+  function create(host, { onClose, onFile, storage, save, confirmLeave, reload }) {
     const get = (k, d) => { try { const v = storage(k); return v === null || v === undefined ? d : v; } catch { return d; } };
     const prefs = { layout: get('wt.gitLayout', 'split') === 'inline' ? 'inline' : 'split', fold: get('wt.gitFold', '1') !== '0', wrap: get('wt.gitWrap', '1') !== '0' };
     host.innerHTML = `
@@ -153,14 +153,21 @@ const GitDiff = (() => {
           </div>
           <label class="tool-check" title="Hide the unchanged lines far from a change"><input type="checkbox" data-gd="fold"> Fold</label>
           <label class="tool-check" title="Wrap long lines"><input type="checkbox" data-gd="wrap"> Wrap</label>
+          <button class="tool-btn" data-gd="edit" title="Edit the file here (the right-hand side)" hidden>✎ Edit</button>
+          <span class="gd-editbar" hidden>
+            <span class="gd-dirty" title="Unsaved changes" hidden>●</span>
+            <button class="tool-btn primary-btn" data-gd="save" title="Save (Ctrl+S)">Save</button>
+            <button class="tool-btn" data-gd="leave-edit" title="Stop editing and go back to the diff">Done</button>
+          </span>
           <button class="icon-btn" data-gd="close" title="Back to the files (Esc)" aria-label="Close the diff">✕</button>
         </div>
       </header>
       <div class="gd-body" tabindex="0"></div>`;
     const q = (s) => host.querySelector(s);
-    const el = { badge: q('.gd-badge'), name: q('.gd-name'), dir: q('.gd-dir'), side: q('.gd-side'), body: q('.gd-body'), fold: q('[data-gd="fold"]'), wrap: q('[data-gd="wrap"]') };
+    const el = { edit: q('[data-gd="edit"]'), editbar: q('.gd-editbar'), dirtyDot: q('.gd-dirty'), actionsView: [...host.querySelectorAll('.gd-seg, .tool-check, [data-gd="prev-change"], [data-gd="next-change"]')], badge: q('.gd-badge'), name: q('.gd-name'), dir: q('.gd-dir'), side: q('.gd-side'), body: q('.gd-body'), fold: q('[data-gd="fold"]'), wrap: q('[data-gd="wrap"]') };
     el.fold.checked = prefs.fold;
     el.wrap.checked = prefs.wrap;
+    let editor = null; // { ed, data, meta, oldPane } while the right-hand side is being edited
     let cur = null; // { data, meta, rows, oldHtml, newHtml, expanded, shown, changeEls, at }
     let token = 0;
 
@@ -279,6 +286,8 @@ const GitDiff = (() => {
       setHeader(meta);
       syncButtons();
       host.hidden = false;
+      el.edit.hidden = !(data.edit && data.edit.editable && data.side !== 'staged');
+      el.edit.title = 'Edit the file here (the right-hand side)';
       const bin = data.oldKind === 'binary' || data.newKind === 'binary';
       if (bin) { cur = null; return message('Binary file: its content is not shown.'); }
       if (data.oldKind === 'large' || data.newKind === 'large') { cur = null; return message('This file is too large to show here.'); }
@@ -338,6 +347,9 @@ const GitDiff = (() => {
       else if (a === 'next-change') jump(1);
       else if (a === 'prev-file') onFile(-1);
       else if (a === 'next-file') onFile(1);
+      else if (a === 'edit') enterEdit();
+      else if (a === 'save') doSave(false);
+      else if (a === 'leave-edit') leaveEdit(false);
       else if (a === 'split' || a === 'inline') { prefs.layout = a; try { storage('wt.gitLayout', a); } catch { /* private mode */ } syncButtons(); if (cur) cur.expanded.clear(); draw(true); }
     });
     host.addEventListener('change', (e) => {
@@ -352,13 +364,95 @@ const GitDiff = (() => {
       else if (e.altKey && e.key === 'ArrowUp') { e.preventDefault(); onFile(-1); }
     });
 
+    // ---- editing the right-hand side
+
+    const normalize = (t) => t.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
+
+    function setEditing(on) {
+      el.editbar.hidden = !on;
+      el.edit.hidden = on || !(cur && cur.data.edit && cur.data.edit.editable && cur.data.side !== 'staged');
+      for (const x of el.actionsView) x.hidden = on;
+    }
+
+    function enterEdit() {
+      if (!cur || editor) return;
+      const data = cur.data;
+      const meta = cur.meta;
+      const lang = languageOf(data.path);
+      const oldLines = data.old === null ? null : linesOf(normalize(data.old));
+      el.body.textContent = '';
+      const wrap = document.createElement('div');
+      wrap.className = 'gd-edit';
+      const left = document.createElement('div');
+      left.className = 'gd-oldpane';
+      const rightPane = document.createElement('div');
+      rightPane.className = 'gd-newpane';
+      rightPane.innerHTML = '<div class="gd-oldhead">After (editing the file)</div><div class="gd-edhost"></div>';
+      const right = rightPane.querySelector('.gd-edhost');
+      wrap.append(left, rightPane);
+      el.body.append(wrap);
+      const oldHtml = oldLines ? cur.oldHtml : [];
+      const drawOld = (hunks) => {
+        const mark = new Map();
+        for (const h of hunks || []) for (let i = 0; i < h.oc; i++) mark.set(h.os + i, h.nc ? 'mod' : 'del');
+        let html = oldLines ? '' : '<div class="gd-oldnote">No previous version: this file is new.</div>';
+        if (oldLines) {
+          for (let i = 0; i < oldLines.length; i++) {
+            const m = mark.get(i + 1);
+            html += `<div class="gd-oldline${m ? ' ' + m : ''}"><span class="gd-oldn">${i + 1}</span><span class="gd-oldt">${oldHtml[i] || '&#8203;'}</span></div>`;
+          }
+        }
+        left.innerHTML = `<div class="gd-oldhead">Before${data.side === 'conflict' ? ' (our side)' : ' (index)'}</div><div class="gd-oldbody">${html}</div>`;
+      };
+      drawOld([]);
+      const newText = normalize(data.new || '');
+      const ed = Editor.create(right, {
+        text: newText, lang, original: oldLines,
+        onDirty: (d) => { el.dirtyDot.hidden = !d; },
+        onSave: () => doSave(false),
+        onMarks: (hunks) => drawOld(hunks),
+        onScroll: (sc) => { const b = left.querySelector('.gd-oldbody'); if (b) b.scrollTop = sc.scrollTop; },
+      });
+      editor = { ed, data, meta, left };
+      setEditing(true);
+      ed.focus();
+    }
+
+    async function doSave(force) {
+      if (!editor || editor.saving) return;
+      editor.saving = true;
+      try {
+        const r = await save({ path: editor.meta.abs, content: editor.ed.getText(), bom: !!editor.data.edit.bom, eol: editor.data.edit.eol, expect: { mtime: editor.data.edit.mtime, size: editor.data.edit.size }, force });
+        if (r && r.ok) { editor.data.edit.mtime = r.mtime; editor.data.edit.size = r.size; editor.ed.markSaved(); await leaveEdit(true); }
+      } finally { if (editor) { editor.saving = false; editor.ed.focus(); } }
+    }
+
+    // Back to the diff. After a save the diff is read again from git.
+    async function leaveEdit(saved) {
+      if (!editor) return true;
+      if (!saved && editor.ed.isDirty() && !(await confirmLeave())) return false;
+      editor.ed.destroy();
+      const data = editor.data;
+      const meta = editor.meta;
+      editor = null;
+      setEditing(false);
+      if (reload) await reload(); else await show(data, meta);
+      return true;
+    }
+
     return {
       show,
       message: (meta, text) => { token++; setHeader(meta); syncButtons(); host.hidden = false; cur = null; message(text); },
-      hide: () => { token++; host.hidden = true; cur = null; el.body.textContent = ''; },
+      hide: () => { token++; if (editor) { editor.ed.destroy(); editor = null; setEditing(false); } host.hidden = true; cur = null; el.body.textContent = ''; },
+      isEditing: () => !!editor,
+      abortEdit: () => { if (editor) { editor.ed.destroy(); editor = null; setEditing(false); } },
+      leaveEditAsk: () => leaveEdit(false),
+      isDirty: () => !!editor && editor.ed.isDirty(),
+      save: () => doSave(false),
+      saveForce: () => doSave(true),
       focus: () => el.body.focus({ preventScroll: true }),
     };
   }
 
-  return { create, languageOf, splitLines, buildRows };
+  return { create, languageOf, splitLines, buildRows, htmlLines, esc, linesOf };
 })();

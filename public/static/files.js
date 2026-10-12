@@ -24,6 +24,7 @@ const Files = (() => {
     source: false, // HTML and SVG files: show the text instead of the page
     clip: null,  // { op: 'copy' | 'cut', paths } the files copied or cut inside the browser
     drag: null,  // { dir, names } while rows are being dragged
+    edit: null, // { path, data, ed } while the preview shows the editor
     git: { data: null, json: '', busy: false, timer: null, collapsed: new Set(), diff: null, token: 0 }, // the repository of the folder on screen, and the file whose diff is shown
   };
   const el = {};
@@ -202,6 +203,54 @@ const Files = (() => {
         (row.querySelector('.primary') || row.querySelector('button')).focus();
       }
     });
+  }
+
+  // ---------------------------------------------------------------- saving text
+
+  const hasUnsaved = () => !!((fb.edit && fb.edit.ed && fb.edit.ed.isDirty()) || (fb.gd && fb.gd.isDirty()));
+
+  // Saves text into an existing file. Resolves to { ok, mtime, size }, or { ok: false } when the user chose not to
+  // overwrite a file that changed on disk meanwhile (or the save failed, which is shown).
+  async function saveText({ path: file, content, bom, eol, expect, force = false }) {
+    try {
+      const r = await api('PUT', '/write', { path: file, content, bom, eol, expect, force });
+      toast('Saved');
+      refreshListSoon();
+      return { ok: true, mtime: r.mtime, size: r.size };
+    } catch (err) {
+      if (err.status === 409 && !force) {
+        const { button } = await dialog({
+          title: 'The file changed on disk',
+          message: `${baseName(file)} was changed by something else since you opened it. Saving now would replace those changes with yours.`,
+          buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'Overwrite', value: 'overwrite', danger: true }],
+        });
+        if (button === 'overwrite') return saveText({ path: file, content, bom, eol, expect, force: true });
+        return { ok: false };
+      }
+      toast(err.message);
+      return { ok: false };
+    }
+  }
+
+  let listTimer = 0;
+  function refreshListSoon() { clearTimeout(listTimer); listTimer = setTimeout(() => { if (fb.open && fb.path) go(fb.path, { push: false }); }, 300); }
+
+  // Before leaving an editor with unsaved changes: save, discard or stay. Resolves to true when it is fine to go on.
+  async function confirmLeave() {
+    const target = fb.edit && fb.edit.ed && fb.edit.ed.isDirty() ? 'preview' : fb.gd && fb.gd.isDirty() ? 'diff' : null;
+    if (!target) return true;
+    const { button } = await dialog({
+      title: 'Unsaved changes',
+      message: 'You changed this file and have not saved it.',
+      buttons: [{ label: 'Keep editing', value: 'stay' }, { label: 'Discard', value: 'discard', danger: true }, { label: 'Save', value: 'save', primary: true }],
+    });
+    if (button === 'discard') return true;
+    if (button === 'save') {
+      if (target === 'preview') return (await saveEdit()) === true;
+      await fb.gd.save();
+      return !fb.gd.isDirty();
+    }
+    return false;
   }
 
   // ---------------------------------------------------------------- building
@@ -469,7 +518,8 @@ const Files = (() => {
     });
     el.hidden.checked = fb.showHidden;
     setupResizers();
-    fb.gd = GitDiff.create(el.diff, { onClose: closeDiff, onFile: stepDiff, storage });
+    fb.gd = GitDiff.create(el.diff, { onClose: closeDiff, onFile: stepDiff, storage, save: saveText, confirmLeave, reload: () => (fb.git.diff ? openDiff(fb.git.diff, { keepScroll: true }) : undefined) });
+    window.addEventListener('beforeunload', (ev) => { if (hasUnsaved()) { ev.preventDefault(); ev.returnValue = ''; } });
     new ResizeObserver(placeDiff).observe(el.places);
 
     root.addEventListener('click', (e) => {
@@ -528,6 +578,7 @@ const Files = (() => {
   // ---------------------------------------------------------------- navigation
 
   async function go(target, { push = true, select = null, preview = false } = {}) {
+    if ((push || target !== fb.path) && hasUnsaved() && !(await confirmLeave())) return false;
     setLoading(true);
     try {
       const data = await api('GET', `/list?path=${enc(target)}`);
@@ -880,11 +931,15 @@ const Files = (() => {
     el.diff.style.left = `${el.places.offsetWidth + (r ? r.offsetWidth : 0)}px`;
   }
 
-  const metaOf = (c) => ({ path: c.path, orig: c.orig, letter: c.k.letter, cls: c.k.cls, label: c.k.label, sideLabel: c.side === 'staged' ? 'Staged' : c.side === 'conflict' ? 'Merge conflict' : c.k === KIND['?'] ? 'Untracked' : 'Working tree' });
+  const metaOf = (c) => ({ abs: fb.git.data ? join(fb.git.data.repo, c.path) : c.path, path: c.path, orig: c.orig, letter: c.k.letter, cls: c.k.cls, label: c.k.label, sideLabel: c.side === 'staged' ? 'Staged' : c.side === 'conflict' ? 'Merge conflict' : c.k === KIND['?'] ? 'Untracked' : 'Working tree' });
 
   async function openDiff(c, { keepScroll = false } = {}) {
     const g = fb.git;
     if (!g.data) return;
+    if (fb.gd.isEditing() && !keepScroll) {
+      if (!(await confirmLeave())) return;
+      fb.gd.abortEdit();
+    }
     const mine = ++g.token;
     g.diff = { path: c.path, side: c.side, orig: c.orig, sig: c.sig, k: c.k };
     placeDiff();
@@ -907,12 +962,17 @@ const Files = (() => {
   function closeDiff() {
     const g = fb.git;
     if (!g.diff && el.diff.hidden) return false;
+    if (fb.gd && fb.gd.isDirty()) { confirmLeave().then((ok) => { if (ok) closeDiffNow(); }); return true; }
+    closeDiffNow();
+    return true;
+  }
+  function closeDiffNow() {
+    const g = fb.git;
     g.token++;
     g.diff = null;
     if (fb.gd) fb.gd.hide();
     renderChanges();
     el.list.focus({ preventScroll: true });
-    return true;
   }
 
   // Another changed file, in the order of the list.
@@ -928,7 +988,7 @@ const Files = (() => {
   // The list was refreshed: keep the diff that is open in step with it.
   function syncDiff(oldSigs) {
     const g = fb.git;
-    if (!g.diff || !g.data) return;
+    if (!g.diff || !g.data || fb.gd.isEditing()) return;
     const c = changeGroups(g.data).flatMap((x) => x.items).find((x) => sameChange(x, g.diff));
     if (!c) { fb.gd.message(metaOf({ ...g.diff, k: g.diff.k }), 'This file has no changes any more.'); g.diff.gone = true; return; }
     if (g.diff.gone || c.sig !== g.diff.sig || oldSigs.get(c.path) !== c.sig) openDiff(c, { keepScroll: !g.diff.gone });
@@ -1458,10 +1518,14 @@ const Files = (() => {
   function onPanelKey(e) {
     const mod = isMac ? e.metaKey : e.ctrlKey;
     if (e.target.tagName === 'INPUT' && e.target !== el.filter) return;
+    if (mod && !e.shiftKey && e.code === 'KeyS' && ((fb.edit && fb.edit.ed) || (fb.gd && fb.gd.isEditing()))) { e.preventDefault(); if (fb.gd && fb.gd.isEditing()) fb.gd.save(); else saveEdit(); return; }
+    if (e.target.tagName === 'TEXTAREA' && e.key !== 'Escape') return; // typing in the editor
     if (e.key === 'Escape') {
       e.preventDefault();
       if (hideMenu()) return;
+      if (fb.gd && fb.gd.isEditing()) { fb.gd.leaveEditAsk(); return; }
       if (closeDiff()) return;
+      if (fb.edit) { confirmLeave().then((ok) => { if (ok) stopEdit(); }); return; }
       if (!el.preview.hidden) { closePreview(); el.list.focus(); return; }
       close();
     } else if (mod && e.shiftKey && e.code === 'KeyF') { e.preventDefault(); close(); }
@@ -1547,7 +1611,63 @@ const Files = (() => {
     }
   }
 
+  // The preview becomes an editor for the file. Save with the button or Ctrl+S.
+  function startEdit(e, p, data, body, actions) {
+    for (const b of actions.querySelectorAll('button, label')) b.hidden = true;
+    const bar = document.createElement('div');
+    bar.className = 'pv-editbar';
+    const dot = document.createElement('span');
+    dot.className = 'gd-dirty';
+    dot.textContent = '●';
+    dot.title = 'Unsaved changes';
+    dot.hidden = true;
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'tool-btn primary-btn';
+    saveBtn.textContent = 'Save';
+    saveBtn.title = 'Save (Ctrl+S)';
+    const done = document.createElement('button');
+    done.className = 'tool-btn';
+    done.textContent = 'Done';
+    done.title = 'Stop editing (asks first when there are unsaved changes)';
+    const hint = document.createElement('span');
+    hint.className = 'pv-edithint';
+    hint.textContent = `${data.eol === 'crlf' ? 'CRLF · ' : ''}${fmtSize(data.size)}`;
+    bar.append(dot, saveBtn, done, hint);
+    body.textContent = '';
+    const host = document.createElement('div');
+    host.className = 'pv-editor';
+    body.append(bar, host);
+    const lang = GitDiff.languageOf(p);
+    const ed = Editor.create(host, { text: data.text, lang, onDirty: (d) => { dot.hidden = !d; }, onSave: () => saveEdit() });
+    fb.edit = { path: p, data, ed, entry: e };
+    saveBtn.onclick = () => saveEdit();
+    done.onclick = async () => { if (await confirmLeave()) stopEdit(); };
+    ed.focus();
+  }
+
+  // Resolves to true when the text was saved.
+  async function saveEdit() {
+    const x = fb.edit;
+    if (!x || x.saving) return false;
+    x.saving = true;
+    try {
+      const r = await saveText({ path: x.path, content: x.ed.getText(), bom: !!x.data.bom, eol: x.data.eol, expect: { mtime: x.data.mtime, size: x.data.size } });
+      if (r.ok && fb.edit === x) { x.data.mtime = r.mtime; x.data.size = r.size; x.ed.markSaved(); }
+      return !!r.ok;
+    } finally { x.saving = false; if (fb.edit === x) x.ed.focus(); }
+  }
+
+  // Leave the editor and show the preview again (read from disk).
+  function stopEdit() {
+    const x = fb.edit;
+    if (!x) return;
+    fb.edit = null;
+    x.ed.destroy();
+    if (fb.previewPath === x.path && x.entry) showPreview(x.entry, { play: false });
+  }
+
   function closePreview() {
+    if (fb.edit) { fb.edit.ed.destroy(); fb.edit = null; }
     stopMedia();
     fb.previewToken++;
     fb.previewPath = null;
@@ -1559,6 +1679,8 @@ const Files = (() => {
 
   // play: start audio/video right away (a click or Enter); false when arrowing past files.
   async function showPreview(e, { play = true } = {}) {
+    if (fb.edit && fb.edit.path !== join(fb.path, e.name) && !(await confirmLeave())) return;
+    if (fb.edit) { fb.edit.ed.destroy(); fb.edit = null; }
     stopMedia();
     const token = ++fb.previewToken;
     const p = join(fb.path, e.name);
@@ -1707,6 +1829,12 @@ const Files = (() => {
       body.append(n);
       return;
     }
+    // Editing: only for a file that is read whole and is plain UTF-8 text (the server says; see /read).
+    const editBtn = act('✎ Edit', () => startEdit(e, p, data, body, actions), 'tool-btn');
+    if (!data.editable) {
+      editBtn.disabled = true;
+      editBtn.title = data.why || 'This file cannot be edited here.';
+    } else editBtn.title = 'Edit this file here (Ctrl+S saves)';
     const isMd = ['md', 'markdown', 'mdown', 'mkd'].includes(ext);
     const canRender = isMd && typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined';
     if (canRender) {
@@ -2360,8 +2488,13 @@ const Files = (() => {
     startGitPolling();
   }
 
-  function close({ keepFocus = false } = {}) {
+  function close(opts = {}) {
     if (!fb.open) return;
+    if (hasUnsaved()) { confirmLeave().then((ok) => { if (ok) { if (fb.edit) { fb.edit.ed.destroy(); fb.edit = null; } if (fb.gd) fb.gd.hide(); closeNow(opts); } }); return; }
+    closeNow(opts);
+  }
+
+  function closeNow({ keepFocus = false } = {}) {
     stopGitPolling();
     stopMedia();
     fb.open = false;
