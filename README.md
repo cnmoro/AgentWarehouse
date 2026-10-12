@@ -40,6 +40,9 @@ The manual steps in [Setup](#setup) below are the same work, for reading or for 
 <td><a href="docs/images/desktop.png"><img src="docs/images/desktop.png" alt="The Desktop panel in Fluid mode"></a><br><b>Desktop.</b> The machine's virtual desktop in the page. <b>Fluid</b> mode streams video (H.264 or VP9) for up to 60 fps with a low delay; <b>VNC</b> mode works anywhere. Mouse, keyboard, shortcuts and clipboard in both.</td>
 <td><a href="docs/images/files-details.png"><img src="docs/images/files-details.png" alt="File explorer in the details view"></a><br><b>Details view.</b> Sortable columns, a filter box, keyboard navigation like a desktop file manager, and pinned places.</td>
 </tr>
+<tr>
+<td colspan="2"><a href="docs/images/git-diff.png"><img src="docs/images/git-diff.png" alt="Git changes list and a side-by-side diff with syntax highlighting"></a><br><b>Git changes.</b> In a git repository, Files lists the changed files (staged, modified, added, deleted, renamed, untracked) under <i>Pinned</i>, and a click opens the diff, side by side or inline, with syntax highlighting, like VS Code.</td>
+</tr>
 </table>
 
 On a phone the sidebar becomes a drawer and a key bar adds Esc, Tab, Ctrl and the arrows:
@@ -204,6 +207,19 @@ The folder button at the top of the sidebar (**Ctrl+Shift+F**, Cmd+Shift+F on a 
 Everything runs as the server's user, so the file browser can reach exactly what that user's shell can.
 
 Markdown files (`.md`) are drawn in the preview (headings, lists, tables, code, pictures next to the file); untick *Render* to read the raw text. The HTML is sanitized (marked + DOMPurify), so scripts in a file never run.
+
+#### Git changes
+
+When the folder on screen is inside a git repository, a **Changes** section appears under *Pinned* in the left column, like VS Code's Source Control view. It shows the branch (with how far ahead or behind its upstream it is) and the changed files in three groups: **Conflicts**, **Staged** and **Changes** (modified, added, deleted, renamed and untracked files, each with a colored letter). A file that is staged and then edited again is in both groups. The list follows the repository as you work (it refreshes every few seconds while the panel is open).
+
+Click a file to see its diff over the file list, with the same layout as VS Code:
+
+- **Side by side** (old on the left, new on the right) or **Inline**; **Fold** hides the unchanged lines far from a change (click a fold to open it); **Wrap** wraps long lines.
+- **Syntax highlighting** for JavaScript/TypeScript, JSON, HTML/XML, CSS/SCSS, Markdown, Python, shell, YAML, TOML/INI, SQL, Go, Rust, Java, Kotlin, C/C++/C#, PHP, Ruby, Swift, Dockerfile and many more ([highlight.js](https://highlightjs.org/), loaded the first time you open a diff).
+- **↑ ↓** (F7 / Shift+F7) jump between the changes of the file, **‹ ›** (Alt+↑ / Alt+↓) go to the previous or next changed file, Esc goes back to the files. If the file changes on disk while its diff is open, the diff updates.
+- Binary files and files over 1.5 MB are listed but not shown. The view is read only: it never stages, commits or discards anything.
+
+It needs `git` on the machine; without it the section is not shown. On a narrow screen (a phone) the left column is hidden, and so is this view.
 
 ### Desktop
 

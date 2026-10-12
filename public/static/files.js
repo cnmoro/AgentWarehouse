@@ -24,6 +24,7 @@ const Files = (() => {
     source: false, // HTML and SVG files: show the text instead of the page
     clip: null,  // { op: 'copy' | 'cut', paths } the files copied or cut inside the browser
     drag: null,  // { dir, names } while rows are being dragged
+    git: { data: null, json: '', busy: false, timer: null, collapsed: new Set(), diff: null, token: 0 }, // the repository of the folder on screen, and the file whose diff is shown
   };
   const el = {};
 
@@ -446,6 +447,7 @@ const Files = (() => {
         <div class="files-resizer files-pv-resizer" role="separator" aria-orientation="vertical" aria-label="Resize preview"
              tabindex="0" title="Drag to resize · double-click to reset"></div>
         <aside class="files-preview" hidden aria-label="Preview"></aside>
+        <section class="files-diff" hidden aria-label="Changes of a file"></section>
       </div>
       <footer class="files-status">
         <span class="files-count"></span>
@@ -463,10 +465,12 @@ const Files = (() => {
       filter: q('.files-filter'), hidden: q('.files-hidden'), cols: q('.files-cols'), table: q('.files-table'), preview: q('.files-preview'),
       count: q('.files-count'), drop: q('.files-drop'), dropName: q('.files-drop b'), main: q('.files-main'),
       progress: q('.files-progress'), progressBar: q('.files-progress-bar div'), progressText: q('.files-progress-text'),
-      inputFiles: q('.files-input-files'), inputDir: q('.files-input-dir'), pinBtn: q('[data-act="pin"]'),
+      inputFiles: q('.files-input-files'), inputDir: q('.files-input-dir'), pinBtn: q('[data-act="pin"]'), diff: q('.files-diff'),
     });
     el.hidden.checked = fb.showHidden;
     setupResizers();
+    fb.gd = GitDiff.create(el.diff, { onClose: closeDiff, onFile: stepDiff, storage });
+    new ResizeObserver(placeDiff).observe(el.places);
 
     root.addEventListener('click', (e) => {
       const b = e.target.closest('[data-act]');
@@ -634,6 +638,7 @@ const Files = (() => {
     el.root.querySelector('[data-act="up"]').disabled = !parentOf(fb.path || '/');
     const ro = fb.listing && !fb.listing.writable;
     for (const a of ['mkdir', 'upload-files', 'upload-dir']) el.root.querySelector(`[data-act="${a}"]`).disabled = ro;
+    refreshGit();
   }
 
   function renderPath() {
@@ -741,6 +746,192 @@ const Files = (() => {
       el.places.append(hint);
     }
     for (const p of fb.pins) el.places.append(placeItem(p.name, p.path, { pin: p, icon: p.type === 'file' ? '◇' : '★' }));
+    el.changes = document.createElement('div');
+    el.changes.className = 'files-changes';
+    el.places.append(el.changes);
+    renderChanges();
+  }
+
+  // ---------------------------------------------------------------- git changes
+
+  const KIND = {
+    M: { letter: 'M', cls: 'm', label: 'Modified' }, A: { letter: 'A', cls: 'a', label: 'Added' }, D: { letter: 'D', cls: 'd', label: 'Deleted' },
+    R: { letter: 'R', cls: 'r', label: 'Renamed' }, C: { letter: 'C', cls: 'r', label: 'Copied' }, T: { letter: 'T', cls: 'm', label: 'Type changed' },
+    U: { letter: '!', cls: 'x', label: 'Merge conflict' }, '?': { letter: 'U', cls: 'u', label: 'Untracked' },
+  };
+
+  // The changes as the groups the list shows: conflicts, staged, then the rest (a file can be in two of them).
+  function changeGroups(data) {
+    const groups = [
+      { id: 'conflict', title: 'Conflicts', side: 'conflict', items: [] },
+      { id: 'staged', title: 'Staged', side: 'staged', items: [] },
+      { id: 'changes', title: 'Changes', side: 'worktree', items: [] },
+    ];
+    for (const c of data.changes) {
+      if (c.conflict) { groups[0].items.push({ ...c, k: KIND.U, side: 'conflict' }); continue; }
+      if (c.x !== '.') groups[1].items.push({ ...c, k: KIND[c.x] || KIND.M, side: 'staged' });
+      if (c.y !== '.') groups[2].items.push({ ...c, k: KIND[c.y] || KIND.M, side: 'worktree', orig: undefined });
+    }
+    const coll = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+    for (const g of groups) g.items.sort((a, b) => coll.compare(a.path, b.path));
+    return groups.filter((g) => g.items.length);
+  }
+  const sameChange = (a, b) => a && b && a.path === b.path && a.side === b.side;
+
+  function renderChanges() {
+    if (!el.changes) return;
+    const data = fb.git.data;
+    el.changes.textContent = '';
+    if (!data || !data.repo) return;
+    const head = document.createElement('div');
+    head.className = 'places-title chg-title';
+    const t = document.createElement('span');
+    t.textContent = 'Changes';
+    const br = document.createElement('span');
+    br.className = 'chg-branch';
+    const where = data.detached ? `(${data.oid || 'detached'})` : data.branch || '(no commits)';
+    br.textContent = `⎇ ${where}${data.ahead ? ` ↑${data.ahead}` : ''}${data.behind ? ` ↓${data.behind}` : ''}`;
+    br.title = `${data.name}: ${data.detached ? 'detached HEAD' : `branch ${where}`}${data.upstream ? ` · tracking ${data.upstream}` : ''}${data.ahead || data.behind ? ` · ${data.ahead} ahead, ${data.behind} behind` : ''}`;
+    head.append(t, br);
+    el.changes.append(head);
+    const groups = changeGroups(data);
+    if (!groups.length) {
+      const hint = document.createElement('div');
+      hint.className = 'places-hint';
+      hint.textContent = `${data.name}: no changes.`;
+      el.changes.append(hint);
+      return;
+    }
+    for (const g of groups) {
+      const open = !fb.git.collapsed.has(g.id);
+      const h = document.createElement('button');
+      h.className = 'chg-group';
+      h.setAttribute('aria-expanded', String(open));
+      h.innerHTML = '<span class="chg-caret"></span><span class="chg-gname"></span><span class="chg-count"></span>';
+      h.querySelector('.chg-caret').textContent = open ? '▾' : '▸';
+      h.querySelector('.chg-gname').textContent = g.title;
+      h.querySelector('.chg-count').textContent = String(g.items.length);
+      h.onclick = () => { if (fb.git.collapsed.has(g.id)) fb.git.collapsed.delete(g.id); else fb.git.collapsed.add(g.id); renderChanges(); };
+      el.changes.append(h);
+      if (!open) continue;
+      for (const c of g.items) {
+        const b = document.createElement('button');
+        b.className = 'chg';
+        if (sameChange(c, fb.git.diff)) b.classList.add('on');
+        const i = c.path.lastIndexOf('/');
+        const badge = document.createElement('span');
+        badge.className = `chg-badge st-${c.k.cls}`;
+        badge.textContent = c.k.letter;
+        const name = document.createElement('span');
+        name.className = 'chg-name';
+        name.textContent = c.path.slice(i + 1);
+        const dir = document.createElement('span');
+        dir.className = 'chg-dir';
+        dir.textContent = i >= 0 ? c.path.slice(0, i) : '';
+        b.append(badge, name, dir);
+        b.title = `${c.path}${c.orig ? `\n(renamed from ${c.orig})` : ''}\n${c.k.label}`;
+        b.onclick = () => openDiff(c);
+        el.changes.append(b);
+      }
+    }
+    if (data.truncated) {
+      const hint = document.createElement('div');
+      hint.className = 'places-hint';
+      hint.textContent = 'Only the first changes are listed.';
+      el.changes.append(hint);
+    }
+  }
+
+  const insideRepo = (repo, p) => !!p && (p === repo || p.startsWith(repo === '/' ? '/' : `${repo}/`));
+
+  // Ask which repository the folder on screen belongs to, and what changed in it.
+  async function refreshGit() {
+    const g = fb.git;
+    if (!fb.info || !fb.info.git || !fb.path || g.busy) return;
+    if (g.data && g.data.repo && !insideRepo(g.data.repo, fb.path)) { g.data = null; g.json = ''; renderChanges(); if (g.diff) closeDiff(); }
+    g.busy = true;
+    const asked = fb.path;
+    try {
+      const data = await api('GET', `/git/status?path=${enc(asked)}`);
+      if (asked !== fb.path) return;
+      const json = JSON.stringify(data);
+      if (json !== g.json) {
+        const sigs = new Map((g.data && g.data.changes || []).map((c) => [`${c.path}`, c.sig]));
+        g.json = json;
+        g.data = data.repo ? data : null;
+        renderChanges();
+        syncDiff(sigs);
+      }
+    } catch { /* not a repository, or git is busy: leave the list as it is */ } finally { g.busy = false; }
+  }
+
+  function startGitPolling() {
+    stopGitPolling();
+    fb.git.timer = setInterval(() => { if (fb.open && !document.hidden) refreshGit(); }, 5000);
+  }
+  function stopGitPolling() { clearInterval(fb.git.timer); fb.git.timer = null; }
+
+  // ---- the diff of one file
+
+  // The diff view covers the list and the preview, right of the Places column.
+  function placeDiff() {
+    if (!el.diff) return;
+    const r = el.root.querySelector('.files-pl-resizer');
+    el.diff.style.left = `${el.places.offsetWidth + (r ? r.offsetWidth : 0)}px`;
+  }
+
+  const metaOf = (c) => ({ path: c.path, orig: c.orig, letter: c.k.letter, cls: c.k.cls, label: c.k.label, sideLabel: c.side === 'staged' ? 'Staged' : c.side === 'conflict' ? 'Merge conflict' : c.k === KIND['?'] ? 'Untracked' : 'Working tree' });
+
+  async function openDiff(c, { keepScroll = false } = {}) {
+    const g = fb.git;
+    if (!g.data) return;
+    const mine = ++g.token;
+    g.diff = { path: c.path, side: c.side, orig: c.orig, sig: c.sig, k: c.k };
+    placeDiff();
+    renderChanges();
+    if (!keepScroll) { el.diff.hidden = false; el.diff.classList.add('loading'); }
+    try {
+      const q = `repo=${enc(g.data.repo)}&path=${enc(c.path)}&side=${c.side}${c.orig ? `&orig=${enc(c.orig)}` : ''}`;
+      const data = await api('GET', `/git/diff?${q}`);
+      if (mine !== g.token) return;
+      el.diff.classList.remove('loading');
+      await fb.gd.show(data, metaOf(c));
+      if (!keepScroll) fb.gd.focus();
+    } catch (err) {
+      if (mine !== g.token) return;
+      el.diff.classList.remove('loading');
+      fb.gd.message(metaOf(c), err.message);
+    }
+  }
+
+  function closeDiff() {
+    const g = fb.git;
+    if (!g.diff && el.diff.hidden) return false;
+    g.token++;
+    g.diff = null;
+    if (fb.gd) fb.gd.hide();
+    renderChanges();
+    el.list.focus({ preventScroll: true });
+    return true;
+  }
+
+  // Another changed file, in the order of the list.
+  function stepDiff(dir) {
+    const g = fb.git;
+    if (!g.data || !g.diff) return;
+    const all = changeGroups(g.data).flatMap((x) => x.items);
+    const i = all.findIndex((c) => sameChange(c, g.diff));
+    const next = all[(Math.max(i, 0) + dir + all.length) % all.length];
+    if (next) openDiff(next);
+  }
+
+  // The list was refreshed: keep the diff that is open in step with it.
+  function syncDiff(oldSigs) {
+    const g = fb.git;
+    if (!g.diff || !g.data) return;
+    const c = changeGroups(g.data).flatMap((x) => x.items).find((x) => sameChange(x, g.diff));
+    if (!c) { fb.gd.message(metaOf({ ...g.diff, k: g.diff.k }), 'This file has no changes any more.'); g.diff.gone = true; return; }
+    if (g.diff.gone || c.sig !== g.diff.sig || oldSigs.get(c.path) !== c.sig) openDiff(c, { keepScroll: !g.diff.gone });
   }
 
   function sortedEntries() {
@@ -1270,6 +1461,7 @@ const Files = (() => {
     if (e.key === 'Escape') {
       e.preventDefault();
       if (hideMenu()) return;
+      if (closeDiff()) return;
       if (!el.preview.hidden) { closePreview(); el.list.focus(); return; }
       close();
     } else if (mod && e.shiftKey && e.code === 'KeyF') { e.preventDefault(); close(); }
@@ -2165,10 +2357,12 @@ const Files = (() => {
     else if (!fb.path) await go(fb.info ? fb.info.home : '~');
     else await refresh();
     el.list.focus({ preventScroll: true });
+    startGitPolling();
   }
 
   function close({ keepFocus = false } = {}) {
     if (!fb.open) return;
+    stopGitPolling();
     stopMedia();
     fb.open = false;
     hideMenu();

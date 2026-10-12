@@ -1,4 +1,5 @@
 'use strict';
+const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
@@ -194,6 +195,21 @@ const vendor = {
 app.get('/vendor/:file', (req, res) => {
   if (!Object.hasOwn(vendor, req.params.file)) return res.sendStatus(404);
   res.sendFile(path.join(nm, vendor[req.params.file]));
+});
+// highlight.js for the Files panel's git diff. Its core is a CommonJS file: served as an ES module so the page can import it;
+// the language files are ES modules already. Only names from the language folder are served.
+let hljsCore = null;
+app.get('/vendor/hljs/core.js', (req, res) => {
+  try {
+    hljsCore ||= `const module = { exports: {} };\n(function (module, exports) {\n${fs.readFileSync(path.join(nm, 'highlight.js/lib/core.js'), 'utf8')}\n})(module, module.exports);\nexport default module.exports;\n`;
+  } catch { return res.sendStatus(404); }
+  res.type('text/javascript').setHeader('Cache-Control', 'public, max-age=3600');
+  res.send(hljsCore);
+});
+app.get('/vendor/hljs/languages/:name.js', (req, res) => {
+  if (!/^[a-z0-9-]{1,30}$/.test(req.params.name)) return res.sendStatus(404);
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.sendFile(path.join(nm, 'highlight.js/es/languages', `${req.params.name}.js`), { dotfiles: 'deny' }, (err) => { if (err && !res.headersSent) res.sendStatus(404); });
 });
 app.use('/static', express.static(path.join(pub, 'static'), { index: false }));
 // noVNC, the browser VNC client (ES modules: its core/ and vendor/ folders).
