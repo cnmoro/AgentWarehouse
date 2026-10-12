@@ -458,16 +458,20 @@ const Vnc = (() => {
     stopStream();
     if (!v.open || !v.rfb || !fluidActive()) return;
     showMsg('');
-    const video = document.createElement('video');
+    const wc = canWebCodecs();
+    const video = document.createElement(wc ? 'canvas' : 'video');
     video.className = 'vnc-video';
-    video.muted = true;
-    video.autoplay = true;
-    video.playsInline = true;
-    video.disablePictureInPicture = true;
+    if (!wc) {
+      video.muted = true;
+      video.autoplay = true;
+      video.playsInline = true;
+      video.disablePictureInPicture = true;
+    }
     el.body.append(video);
-    const st = { video, ws: null, ms: null, sb: null, url: '', buf: new Uint8Array(0), init: [], moof: null, queue: [], fps: 0, frames: 0, closed: false, size: currentSize(), timers: [], mime: '' };
+    const st = { wc, dec: null, ctx: null, pre: [], n: 0, video, ws: null, ms: null, sb: null, url: '', buf: new Uint8Array(0), init: [], moof: null, queue: [], fps: 0, frames: 0, closed: false, size: currentSize(), timers: [], mime: '' };
     v.stream = st;
     const q = new URLSearchParams({ codec: v.codec, fps: String(v.fps), mbps: String(v.mbps) });
+    if (wc) q.set('fmt', 'raw');
     const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/vstream?${q}`);
     ws.binaryType = 'arraybuffer';
     st.ws = ws;
@@ -481,13 +485,14 @@ const Vnc = (() => {
         } catch { /* not ours */ }
         return;
       }
-      feed(st, new Uint8Array(e.data));
+      if (wc) feedRaw(st, new Uint8Array(e.data)); else feed(st, new Uint8Array(e.data));
     };
     ws.onclose = () => { if (!st.closed && v.stream === st) setTimeout(() => { if (!st.closed && v.stream === st) streamFailed('The video connection closed.'); }, 200); };
     ws.onerror = () => {};
     // Keep the video over the canvas that noVNC resizes, and count frames.
     const sync = () => syncVideo(st);
-    st.timers.push(setInterval(sync, 250), setInterval(() => liveEdge(st), 100));
+    st.timers.push(setInterval(sync, 250));
+    if (!wc) st.timers.push(setInterval(() => liveEdge(st), 100));
     const ro = new ResizeObserver(sync);
     ro.observe(el.body);
     st.ro = ro;
@@ -498,7 +503,8 @@ const Vnc = (() => {
       if (now - last >= 1000) { st.fps = Math.round((st.frames * 1000) / (now - last)); st.frames = 0; last = now; }
       video.requestVideoFrameCallback(tick);
     };
-    if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(tick);
+    if (wc) st.timers.push(setInterval(() => { const now = performance.now(); st.fps = Math.round((st.frames * 1000) / (now - last)); st.frames = 0; last = now; }, 1000));
+    else if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(tick);
     sync();
   }
 
@@ -508,6 +514,111 @@ const Vnc = (() => {
     const b = el.body.getBoundingClientRect();
     const r = c.getBoundingClientRect();
     Object.assign(st.video.style, { left: `${r.left - b.left}px`, top: `${r.top - b.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+  }
+
+  // ---- WebCodecs: the frames are decoded and drawn as soon as they arrive, with none of the buffering a media
+  // element adds. It needs a secure context (HTTPS or localhost) and a browser with VideoDecoder.
+  const canWebCodecs = () => !v.noWC && window.isSecureContext && typeof VideoDecoder === 'function' && typeof EncodedVideoChunk === 'function';
+
+  // Falls back to the media element (MSE) for this and the following streams.
+  function wcFallback(why) {
+    if (!v.stream) return;
+    console.warn('[vnc] WebCodecs not used:', why);
+    v.noWC = true;
+    stopStream();
+    startStream();
+  }
+
+  // Raw stream in: H.264 is split into frames at each access unit delimiter, VP9 and AV1 come in IVF frames.
+  function feedRaw(st, bytes) {
+    st.buf = st.buf.length ? concat([st.buf, bytes]) : bytes;
+    if (v.codec === 'h264') {
+      for (;;) {
+        const b = st.buf;
+        const next = nextAud(b, 4);
+        if (next < 0) break;
+        const au = b.slice(0, next);
+        st.buf = b.subarray(next);
+        wcFrame(st, au);
+      }
+    } else {
+      if (!st.ivf) { if (st.buf.length < 32) return; st.buf = st.buf.subarray(32); st.ivf = true; }
+      for (;;) {
+        const b = st.buf;
+        if (b.length < 12) break;
+        const size = (b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)) >>> 0;
+        if (b.length < 12 + size) break;
+        const fr = b.slice(12, 12 + size);
+        st.buf = b.subarray(12 + size);
+        wcFrame(st, fr);
+      }
+    }
+  }
+  // Where the next access unit delimiter (NAL type 9) starts, counting its zero byte, or -1.
+  function nextAud(b, from) {
+    for (let i = from; i + 4 <= b.length; i++) {
+      if (b[i + 2] === 1 && b[i + 1] === 0 && b[i] === 0 && (b[i + 3] & 31) === 9) return i > 0 && b[i - 1] === 0 ? i - 1 : i;
+    }
+    return -1;
+  }
+  const hasNal = (b, type) => {
+    for (let i = 0; i + 4 <= b.length; i++) if (b[i] === 0 && b[i + 1] === 0 && b[i + 2] === 1 && (b[i + 3] & 31) === type) return i + 3;
+    return -1;
+  };
+
+  function wcFrame(st, data) {
+    if (st.closed) return;
+    let key = st.n === 0;
+    let codec = '';
+    if (v.codec === 'h264') {
+      key = hasNal(data, 5) >= 0;
+      const sps = hasNal(data, 7);
+      if (!st.dec && sps >= 0) codec = `avc1.${[1, 2, 3].map((k) => data[sps + k].toString(16).padStart(2, '0')).join('')}`;
+    } else if (v.codec === 'vp9') {
+      key = !(data[0] & 0x0c);
+      codec = 'vp09.00.51.08';
+    } else {
+      codec = 'av01.0.13M.08';
+    }
+    if (!st.dec) {
+      st.pre.push({ data, key });
+      if (codec && !st.starting) wcStart(st, codec);
+      return;
+    }
+    wcDecode(st, data, key);
+  }
+
+  function wcStart(st, codec) {
+    st.starting = true;
+    const config = { codec, optimizeForLatency: true };
+    VideoDecoder.isConfigSupported(config).then((r) => {
+      if (st.closed) return;
+      if (!r.supported) return wcFallback(`${codec} is not supported`);
+      const ctx = st.video.getContext('2d', { alpha: false, desynchronized: true });
+      st.ctx = ctx;
+      const dec = new VideoDecoder({
+        output: (frame) => {
+          st.frames++;
+          if (st.closed) { frame.close(); return; }
+          const c = st.video;
+          if (c.width !== frame.displayWidth || c.height !== frame.displayHeight) { c.width = frame.displayWidth; c.height = frame.displayHeight; }
+          ctx.drawImage(frame, 0, 0);
+          frame.close();
+        },
+        error: (e) => { if (!st.closed) wcFallback(e.message); },
+      });
+      dec.configure(r.config);
+      st.dec = dec;
+      for (const f of st.pre.splice(0)) wcDecode(st, f.data, f.key);
+    }).catch((e) => wcFallback(e.message));
+  }
+
+  function wcDecode(st, data, key) {
+    // A first frame that is not a key frame cannot be decoded: wait for one.
+    if (!st.synced) { if (!key) return; st.synced = true; }
+    try {
+      st.dec.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: Math.round((st.n++ * 1e6) / v.fps), data }));
+    } catch (e) { wcFallback(e.message); }
   }
 
   // Splits what arrives into MP4 boxes: ftyp and moov make the init segment; each moof + mdat is one frame.
@@ -594,7 +705,8 @@ const Vnc = (() => {
     st.timers.forEach(clearInterval);
     st.ro?.disconnect();
     try { st.ws.close(); } catch { /* closed */ }
-    try { st.video.removeAttribute('src'); st.video.load(); } catch { /* gone */ }
+    try { st.dec?.close(); } catch { /* closed */ }
+    if (!st.wc) try { st.video.removeAttribute('src'); st.video.load(); } catch { /* gone */ }
     if (st.url) URL.revokeObjectURL(st.url);
     st.video.remove();
   }
