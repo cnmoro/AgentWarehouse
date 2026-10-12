@@ -25,7 +25,7 @@ const Files = (() => {
     clip: null,  // { op: 'copy' | 'cut', paths } the files copied or cut inside the browser
     drag: null,  // { dir, names } while rows are being dragged
     edit: null, // { path, data, ed } while the preview shows the editor
-    git: { data: null, json: '', busy: false, timer: null, collapsed: new Set(), diff: null, token: 0 }, // the repository of the folder on screen, and the file whose diff is shown
+    git: { data: null, json: '', message: '', running: null, again: false, busy: false, timer: null, collapsed: new Set(), diff: null, token: 0 }, // the repository of the folder on screen, and the file whose diff is shown
   };
   const el = {};
 
@@ -829,76 +829,322 @@ const Files = (() => {
   }
   const sameChange = (a, b) => a && b && a.path === b.path && a.side === b.side;
 
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+
+  // The Changes section is built in two parts: a head (branch, buttons, commit box) that is made once and then only
+  // updated, so the message being typed is not lost when the list refreshes, and the list of files, drawn again.
   function renderChanges() {
     if (!el.changes) return;
     const data = fb.git.data;
-    el.changes.textContent = '';
-    if (!data || !data.repo) return;
+    if (!data || !data.repo) { el.changes.textContent = ''; return; }
+    if (!el.changes.firstChild) buildChangesHead();
+    updateChangesHead(data);
+    renderChangeList(data);
+  }
+
+  function gitButton(label, title, onclick, cls = 'tool-btn') {
+    const b = document.createElement('button');
+    b.className = cls;
+    b.textContent = label;
+    b.title = title;
+    b.onclick = onclick;
+    return b;
+  }
+
+  function buildChangesHead() {
     const head = document.createElement('div');
     head.className = 'places-title chg-title';
     const t = document.createElement('span');
     t.textContent = 'Changes';
-    const br = document.createElement('span');
-    br.className = 'chg-branch';
-    const where = data.detached ? `(${data.oid || 'detached'})` : data.branch || '(no commits)';
-    br.textContent = `⎇ ${where}${data.ahead ? ` ↑${data.ahead}` : ''}${data.behind ? ` ↓${data.behind}` : ''}`;
-    br.title = `${data.name}: ${data.detached ? 'detached HEAD' : `branch ${where}`}${data.upstream ? ` · tracking ${data.upstream}` : ''}${data.ahead || data.behind ? ` · ${data.ahead} ahead, ${data.behind} behind` : ''}`;
+    const br = gitButton('', '', (ev) => branchMenu(ev), 'chg-branch');
     head.append(t, br);
-    el.changes.append(head);
+    const bar = document.createElement('div');
+    bar.className = 'chg-bar';
+    const pull = gitButton('↓', 'Pull', () => gitAct('Pull', { action: 'pull' }));
+    const push = gitButton('↑', 'Push', () => gitAct('Push', { action: 'push' }));
+    const sync = gitButton('⟳', 'Sync: pull, then push', () => gitAct('Sync', { action: 'sync' }));
+    const more = gitButton('⋯', 'More git actions', (ev) => moreMenu(ev));
+    pull.classList.add('chg-pull');
+    push.classList.add('chg-push');
+    bar.append(pull, push, sync, more);
+    const box = document.createElement('div');
+    box.className = 'chg-commit';
+    const msg = document.createElement('textarea');
+    msg.className = 'chg-msg';
+    msg.rows = 2;
+    msg.placeholder = 'Message (Ctrl+Enter to commit)';
+    msg.spellcheck = true;
+    msg.value = fb.git.message || '';
+    msg.addEventListener('input', () => { fb.git.message = msg.value; });
+    msg.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); doCommit(); } });
+    const row = document.createElement('div');
+    row.className = 'chg-commitrow';
+    const commit = gitButton('✓ Commit', 'Commit the staged changes', () => doCommit(), 'tool-btn primary-btn chg-commitbtn');
+    const variants = gitButton('▾', 'Other ways to commit', (ev) => commitMenu(ev), 'tool-btn chg-commitmore');
+    row.append(commit, variants);
+    box.append(msg, row);
+    const status = document.createElement('div');
+    status.className = 'chg-run';
+    status.setAttribute('aria-live', 'polite');
+    const list = document.createElement('div');
+    list.className = 'chg-list';
+    el.changes.append(head, bar, box, status, list);
+  }
+
+  function updateChangesHead(data) {
+    const g = fb.git;
+    const q = (s) => el.changes.querySelector(s);
+    const where = data.detached ? `(${data.oid || 'detached'})` : data.branch || '(no commits)';
+    const br = q('.chg-branch');
+    br.textContent = `⎇ ${where}${data.ahead ? ` ↑${data.ahead}` : ''}${data.behind ? ` ↓${data.behind}` : ''}`;
+    br.title = `${data.name}: ${data.detached ? 'detached HEAD' : `branch ${where}`}${data.upstream ? ` · tracking ${data.upstream}` : ''}${data.ahead || data.behind ? ` · ${data.ahead} ahead, ${data.behind} behind` : ''}\nClick to switch or create a branch`;
+    const groups = changeGroups(data);
+    const count = (id) => (groups.find((x) => x.id === id) || { items: [] }).items.length;
+    const staged = count('staged');
+    const pull = q('.chg-pull');
+    const push = q('.chg-push');
+    pull.textContent = data.behind ? `↓ ${data.behind}` : '↓';
+    push.textContent = data.ahead ? `↑ ${data.ahead}` : '↑';
+    pull.title = data.upstream ? `Pull from ${data.upstream}` : 'Pull (this branch has no upstream)';
+    push.title = data.upstream ? `Push to ${data.upstream}` : 'Push, creating the branch on the remote';
+    const commit = q('.chg-commitbtn');
+    const all = !staged && (count('changes') + count('conflict') > 0);
+    commit.textContent = all ? '✓ Commit All' : '✓ Commit';
+    commit.title = all ? 'Nothing is staged: stage every change and commit them' : `Commit the ${plural(staged, 'staged file')}`;
+    const busy = !!g.running;
+    for (const b of el.changes.querySelectorAll('.chg-bar button, .chg-commitrow button')) b.disabled = busy;
+    q('.chg-run').textContent = busy ? `${g.running}…` : '';
+  }
+
+  const guard = (fn) => (ev) => { ev.stopPropagation(); fn(ev); };
+
+  function renderChangeList(data) {
+    const list = el.changes.querySelector('.chg-list');
+    list.textContent = '';
     const groups = changeGroups(data);
     if (!groups.length) {
       const hint = document.createElement('div');
       hint.className = 'places-hint';
       hint.textContent = `${data.name}: no changes.`;
-      el.changes.append(hint);
+      list.append(hint);
       return;
     }
     for (const g of groups) {
       const open = !fb.git.collapsed.has(g.id);
-      const h = document.createElement('button');
+      const h = document.createElement('div');
       h.className = 'chg-group';
+      h.setAttribute('role', 'button');
+      h.tabIndex = 0;
       h.setAttribute('aria-expanded', String(open));
-      h.innerHTML = '<span class="chg-caret"></span><span class="chg-gname"></span><span class="chg-count"></span>';
-      h.querySelector('.chg-caret').textContent = open ? '▾' : '▸';
-      h.querySelector('.chg-gname').textContent = g.title;
-      h.querySelector('.chg-count').textContent = String(g.items.length);
-      h.onclick = () => { if (fb.git.collapsed.has(g.id)) fb.git.collapsed.delete(g.id); else fb.git.collapsed.add(g.id); renderChanges(); };
-      el.changes.append(h);
-      if (!open) continue;
-      for (const c of g.items) {
-        const b = document.createElement('button');
-        b.className = 'chg';
-        if (sameChange(c, fb.git.diff)) b.classList.add('on');
-        const i = c.path.lastIndexOf('/');
-        const badge = document.createElement('span');
-        badge.className = `chg-badge st-${c.k.cls}`;
-        badge.textContent = c.k.letter;
-        const name = document.createElement('span');
-        name.className = 'chg-name';
-        name.textContent = c.path.slice(i + 1);
-        const dir = document.createElement('span');
-        dir.className = 'chg-dir';
-        dir.textContent = i >= 0 ? c.path.slice(0, i) : '';
-        b.append(badge, name, dir);
-        b.title = `${c.path}${c.orig ? `\n(renamed from ${c.orig})` : ''}\n${c.k.label}`;
-        b.onclick = () => openDiff(c);
-        el.changes.append(b);
+      const caret = document.createElement('span');
+      caret.className = 'chg-caret';
+      caret.textContent = open ? '▾' : '▸';
+      const gname = document.createElement('span');
+      gname.className = 'chg-gname';
+      gname.textContent = g.title;
+      const acts = document.createElement('span');
+      acts.className = 'chg-acts';
+      const act = (label, title, fn, cls = '') => { const b = gitButton(label, title, guard(fn), `chg-act ${cls}`); b.disabled = !!fb.git.running; acts.append(b); };
+      if (g.id === 'staged') act('−', 'Unstage all', () => gitAct('Unstage', { action: 'unstage', all: true }));
+      if (g.id === 'changes') {
+        act('↶', 'Discard all changes', () => discardItems(g.items), 'danger');
+        act('＋', 'Stage all', () => gitAct('Stage', { action: 'stage', all: true }));
       }
+      if (g.id === 'conflict') act('＋', 'Mark all as resolved (stage)', () => gitAct('Stage', { action: 'stage', paths: g.items.map((c) => c.path) }));
+      const cnt = document.createElement('span');
+      cnt.className = 'chg-count';
+      cnt.textContent = String(g.items.length);
+      h.append(caret, gname, acts, cnt);
+      const toggle = () => { if (fb.git.collapsed.has(g.id)) fb.git.collapsed.delete(g.id); else fb.git.collapsed.add(g.id); renderChanges(); };
+      h.onclick = toggle;
+      h.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggle(); } };
+      list.append(h);
+      if (!open) continue;
+      for (const c of g.items) list.append(changeRow(c, g));
     }
     if (data.truncated) {
       const hint = document.createElement('div');
       hint.className = 'places-hint';
       hint.textContent = 'Only the first changes are listed.';
-      el.changes.append(hint);
+      list.append(hint);
     }
+  }
+
+  function changeRow(c, g) {
+    const b = document.createElement('div');
+    b.className = 'chg';
+    b.setAttribute('role', 'button');
+    b.tabIndex = 0;
+    if (sameChange(c, fb.git.diff)) b.classList.add('on');
+    const i = c.path.lastIndexOf('/');
+    const badge = document.createElement('span');
+    badge.className = `chg-badge st-${c.k.cls}`;
+    badge.textContent = c.k.letter;
+    const name = document.createElement('span');
+    name.className = 'chg-name';
+    name.textContent = c.path.slice(i + 1);
+    const dir = document.createElement('span');
+    dir.className = 'chg-dir';
+    dir.textContent = i >= 0 ? c.path.slice(0, i) : '';
+    const acts = document.createElement('span');
+    acts.className = 'chg-acts';
+    const busy = !!fb.git.running;
+    const act = (label, title, fn, cls = '') => { const x = gitButton(label, title, guard(fn), `chg-act ${cls}`); x.disabled = busy; acts.append(x); };
+    if (g.id === 'staged') act('−', 'Unstage', () => gitAct('Unstage', { action: 'unstage', paths: c.orig ? [c.path, c.orig] : [c.path] }));
+    else {
+      act('↶', c.k === KIND['?'] ? 'Delete this untracked file' : 'Discard the changes in this file', () => discardItems([c]), 'danger');
+      act('＋', 'Stage', () => gitAct('Stage', { action: 'stage', paths: [c.path] }));
+    }
+    b.append(badge, name, dir, acts);
+    b.title = `${c.path}${c.orig ? `\n(renamed from ${c.orig})` : ''}\n${c.k.label}`;
+    b.onclick = () => openDiff(c);
+    b.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openDiff(c); } };
+    return b;
+  }
+
+  // ---- git actions
+
+  const firstLine = (text) => (String(text || '').split('\n').find((l) => l.trim()) || '').trim().slice(0, 140);
+
+  // Runs one git action in the repository on screen, then refreshes the list. Resolves to the answer, or null when it failed
+  // (git's own message is shown then).
+  async function gitAct(label, body) {
+    const g = fb.git;
+    if (!g.data || g.running) return null;
+    g.running = label;
+    renderChanges();
+    try {
+      const r = await api('POST', '/git/action', { repo: g.data.repo, ...body });
+      toast(`${label}: ${firstLine(r.output) || 'done'}`);
+      return r;
+    } catch (err) {
+      await dialog({ title: `${label} failed`, message: err.message, buttons: [{ label: 'OK', value: 'ok', primary: true }] });
+      return null;
+    } finally {
+      g.running = null;
+      await refreshGit(true);
+      renderChanges();
+    }
+  }
+
+  async function discardItems(items) {
+    const tracked = items.filter((c) => c.k !== KIND['?']).map((c) => c.path);
+    const untracked = items.filter((c) => c.k === KIND['?']).map((c) => c.path);
+    const what = items.length === 1 ? baseName(items[0].path) : `${items.length} files`;
+    const { button } = await dialog({
+      title: 'Discard changes',
+      message: `${untracked.length ? 'Untracked files are deleted for good. ' : ''}The changes in ${what} are lost and cannot be recovered.`,
+      list: items.map((c) => c.path),
+      buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'Discard', value: 'go', danger: true }],
+    });
+    if (button !== 'go') return;
+    await gitAct('Discard', { action: 'discard', paths: tracked, untracked });
+  }
+
+  async function doCommit({ amend = false, stageAll = false, then = null } = {}) {
+    const g = fb.git;
+    if (!g.data || g.running) return;
+    const msg = (g.message || '').trim();
+    const groups = changeGroups(g.data);
+    const n = (id) => (groups.find((x) => x.id === id) || { items: [] }).items.length;
+    if (!msg && !amend) {
+      toast('Type a commit message first.');
+      el.changes.querySelector('.chg-msg')?.focus();
+      return;
+    }
+    let all = stageAll;
+    if (!n('staged') && !amend && !all) {
+      if (!(n('changes') + n('conflict'))) { toast('Nothing to commit.'); return; }
+      const { button } = await dialog({
+        title: 'No staged changes', message: 'Nothing is staged. Stage all the changes and commit them?',
+        buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'Stage all and commit', value: 'go', primary: true }],
+      });
+      if (button !== 'go') return;
+      all = true;
+    }
+    const r = await gitAct(amend ? 'Amend' : 'Commit', { action: 'commit', message: msg, amend, stageAll: all });
+    if (!r) return;
+    g.message = '';
+    const box = el.changes.querySelector('.chg-msg');
+    if (box) box.value = '';
+    if (then === 'push') await gitAct('Push', { action: 'push' });
+    if (then === 'sync') await gitAct('Sync', { action: 'sync' });
+  }
+
+  function menuAt(ev, items) {
+    const r = ev.currentTarget.getBoundingClientRect();
+    showMenu(r.left, r.bottom + 2, items);
+  }
+
+  function commitMenu(ev) {
+    menuAt(ev, [
+      { label: 'Commit', action: () => doCommit() },
+      { label: 'Commit All (stage everything)', action: () => doCommit({ stageAll: true }) },
+      { label: 'Commit (Amend last commit)', action: () => doCommit({ amend: true }) },
+      { sep: true },
+      { label: 'Commit & Push', action: () => doCommit({ then: 'push' }) },
+      { label: 'Commit & Sync', action: () => doCommit({ then: 'sync' }) },
+    ]);
+  }
+
+  function moreMenu(ev) {
+    const d = fb.git.data;
+    menuAt(ev, [
+      { label: 'Pull', action: () => gitAct('Pull', { action: 'pull' }) },
+      { label: 'Pull (Rebase)', action: () => gitAct('Pull', { action: 'pull', rebase: true }) },
+      { label: 'Push', action: () => gitAct('Push', { action: 'push' }) },
+      { label: 'Push (Force, with lease)…', action: async () => {
+        const { button } = await dialog({ title: 'Force push', message: 'This replaces the branch on the remote with yours, discarding commits there that you do not have. It is refused if someone pushed in the meantime (--force-with-lease).', buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'Force push', value: 'go', danger: true }] });
+        if (button === 'go') gitAct('Push', { action: 'push', force: true });
+      } },
+      { label: 'Fetch', action: () => gitAct('Fetch', { action: 'fetch' }) },
+      { label: 'Sync (pull, then push)', action: () => gitAct('Sync', { action: 'sync' }) },
+      { sep: true },
+      { label: 'Switch branch…', action: () => branchMenuAt(ev.currentTarget) },
+      { label: 'Create branch…', action: () => createBranch() },
+      { sep: true },
+      { label: 'Stash', action: () => gitAct('Stash', { action: 'stash' }) },
+      { label: 'Stash (include untracked)', action: () => gitAct('Stash', { action: 'stash', untracked: true }) },
+      { label: d && d.stashes ? `Pop stash (${d.stashes})` : 'Pop stash', disabled: !(d && d.stashes), action: () => gitAct('Pop stash', { action: 'stashPop' }) },
+      { sep: true },
+      { label: 'Undo last commit (keep the changes)', action: async () => {
+        const { button } = await dialog({ title: 'Undo last commit', message: 'The last commit is undone and its changes are staged again. Nothing is lost.', buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'Undo commit', value: 'go', primary: true }] });
+        if (button === 'go') gitAct('Undo commit', { action: 'undoCommit' });
+      } },
+    ]);
+  }
+
+  async function branchMenu(ev) { branchMenuAt(ev.currentTarget); }
+
+  async function branchMenuAt(anchor) {
+    const g = fb.git;
+    if (!g.data) return;
+    let list;
+    try { list = (await api('GET', `/git/branches?repo=${enc(g.data.repo)}`)).branches; } catch (err) { toast(err.message); return; }
+    const r = anchor.getBoundingClientRect();
+    const items = [{ label: '＋ Create new branch…', action: () => createBranch() }, { sep: true }];
+    for (const b of list.slice(0, 40)) {
+      items.push({
+        label: `${b.current ? '✓ ' : ''}${b.name}`, hint: b.remote ? 'remote' : b.upstream ? '' : '', disabled: b.current,
+        action: () => gitAct('Switch branch', { action: 'checkout', branch: b.remote ? b.name.slice(b.name.indexOf('/') + 1) : b.name }),
+      });
+    }
+    if (list.length > 40) items.push({ label: `…and ${list.length - 40} more (use the terminal)`, disabled: true, action() {} });
+    showMenu(r.left, r.bottom + 2, items);
+  }
+
+  async function createBranch() {
+    const { button, value } = await dialog({ title: 'Create branch', message: 'Name of the new branch (it starts from the current one and is switched to):', input: '', buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'Create', value: 'go', primary: true }] });
+    if (button === 'go' && value) gitAct('Create branch', { action: 'createBranch', name: value });
   }
 
   const insideRepo = (repo, p) => !!p && (p === repo || p.startsWith(repo === '/' ? '/' : `${repo}/`));
 
   // Ask which repository the folder on screen belongs to, and what changed in it.
-  async function refreshGit() {
+  async function refreshGit(force = false) {
     const g = fb.git;
-    if (!fb.info || !fb.info.git || !fb.path || g.busy) return;
+    if (!fb.info || !fb.info.git || !fb.path) return;
+    if (g.busy) { if (force) g.again = true; return; }
     if (g.data && g.data.repo && !insideRepo(g.data.repo, fb.path)) { g.data = null; g.json = ''; renderChanges(); if (g.diff) closeDiff(); }
     g.busy = true;
     const asked = fb.path;
@@ -906,14 +1152,17 @@ const Files = (() => {
       const data = await api('GET', `/git/status?path=${enc(asked)}`);
       if (asked !== fb.path) return;
       const json = JSON.stringify(data);
-      if (json !== g.json) {
+      if (force || json !== g.json) {
         const sigs = new Map((g.data && g.data.changes || []).map((c) => [`${c.path}`, c.sig]));
         g.json = json;
         g.data = data.repo ? data : null;
         renderChanges();
         syncDiff(sigs);
       }
-    } catch { /* not a repository, or git is busy: leave the list as it is */ } finally { g.busy = false; }
+    } catch { /* not a repository, or git is busy: leave the list as it is */ } finally {
+      g.busy = false;
+      if (g.again) { g.again = false; refreshGit(true); }
+    }
   }
 
   function startGitPolling() {
@@ -990,7 +1239,14 @@ const Files = (() => {
     const g = fb.git;
     if (!g.diff || !g.data || fb.gd.isEditing()) return;
     const c = changeGroups(g.data).flatMap((x) => x.items).find((x) => sameChange(x, g.diff));
-    if (!c) { fb.gd.message(metaOf({ ...g.diff, k: g.diff.k }), 'This file has no changes any more.'); g.diff.gone = true; return; }
+    if (!c) {
+      // Staged or unstaged meanwhile: follow the file to its other group.
+      const other = changeGroups(g.data).flatMap((x) => x.items).find((x) => x.path === g.diff.path);
+      if (other) { openDiff(other, { keepScroll: true }); return; }
+      fb.gd.message(metaOf({ ...g.diff, k: g.diff.k }), 'This file has no changes any more.');
+      g.diff.gone = true;
+      return;
+    }
     if (g.diff.gone || c.sig !== g.diff.sig || oldSigs.get(c.path) !== c.sig) openDiff(c, { keepScroll: !g.diff.gone });
   }
 

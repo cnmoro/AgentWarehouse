@@ -41,7 +41,7 @@ The manual steps in [Setup](#setup) below are the same work, for reading or for 
 <td><a href="docs/images/files-details.png"><img src="docs/images/files-details.png" alt="File explorer in the details view"></a><br><b>Details view.</b> Sortable columns, a filter box, keyboard navigation like a desktop file manager, and pinned places.</td>
 </tr>
 <tr>
-<td colspan="2"><a href="docs/images/git-diff.png"><img src="docs/images/git-diff.png" alt="Git changes list and a side-by-side diff with syntax highlighting"></a><br><b>Git changes.</b> In a git repository, Files lists the changed files (staged, modified, added, deleted, renamed, untracked) under <i>Pinned</i>, and a click opens the diff, side by side or inline, with syntax highlighting, like VS Code.</td>
+<td colspan="2"><a href="docs/images/git-diff.png"><img src="docs/images/git-diff.png" alt="Git changes list and a side-by-side diff with syntax highlighting"></a><br><b>Git changes.</b> In a git repository, Files lists the changed files (staged, modified, added, deleted, renamed, untracked) under <i>Pinned</i>, and a click opens the diff, side by side or inline, with syntax highlighting, like VS Code. You can edit the file right there, stage, commit (with a message), push, pull and switch branches.</td>
 </tr>
 </table>
 
@@ -208,6 +208,16 @@ Everything runs as the server's user, so the file browser can reach exactly what
 
 Markdown files (`.md`) are drawn in the preview (headings, lists, tables, code, pictures next to the file); untick *Render* to read the raw text. The HTML is sanitized (marked + DOMPurify), so scripts in a file never run.
 
+#### Editing files
+
+Click **✎ Edit** in the preview of a text file (`.txt`, `.md`, `.json`, code, config files...) to change it in place. The editor is a plain text box with syntax colors behind it: Tab and Shift+Tab indent, Enter keeps the indentation, Ctrl+Z undoes, **Ctrl+S** (or the Save button) writes the file. Leaving with unsaved changes asks first.
+
+It is careful with files, so it only opens what it can save back without changing anything you did not touch:
+
+- **Size:** files up to 1 MB. A bigger file (a CSV with millions of lines, a log) is still previewed (the first 1 MB), but Edit is disabled and says why. Above ~150 KB the colors and the change marks are switched off so typing stays quick.
+- **Encoding and line endings:** the file must be valid UTF-8 with one kind of line ending. CRLF files stay CRLF and a UTF-8 byte order mark is kept. Binary, Latin-1 or mixed-ending files are shown read only.
+- **Safe saving:** the file is written to a temporary file next to it and renamed over it, with its permissions kept. If the file changed on disk after you opened it, you are asked before your version replaces it.
+
 #### Git changes
 
 When the folder on screen is inside a git repository, a **Changes** section appears under *Pinned* in the left column, like VS Code's Source Control view. It shows the branch (with how far ahead or behind its upstream it is) and the changed files in three groups: **Conflicts**, **Staged** and **Changes** (modified, added, deleted, renamed and untracked files, each with a colored letter). A file that is staged and then edited again is in both groups. The list follows the repository as you work (it refreshes every few seconds while the panel is open).
@@ -217,7 +227,18 @@ Click a file to see its diff over the file list, with the same layout as VS Code
 - **Side by side** (old on the left, new on the right) or **Inline**; **Fold** hides the unchanged lines far from a change (click a fold to open it); **Wrap** wraps long lines.
 - **Syntax highlighting** for JavaScript/TypeScript, JSON, HTML/XML, CSS/SCSS, Markdown, Python, shell, YAML, TOML/INI, SQL, Go, Rust, Java, Kotlin, C/C++/C#, PHP, Ruby, Swift, Dockerfile and many more ([highlight.js](https://highlightjs.org/), loaded the first time you open a diff).
 - **↑ ↓** (F7 / Shift+F7) jump between the changes of the file, **‹ ›** (Alt+↑ / Alt+↓) go to the previous or next changed file, Esc goes back to the files. If the file changes on disk while its diff is open, the diff updates.
-- Binary files and files over 1.5 MB are listed but not shown. The view is read only: it never stages, commits or discards anything.
+- **✎ Edit** (for the working-tree side) turns the right-hand side into the editor described above, next to the old version: the lines you changed are marked as you type, and Ctrl+S saves and returns to the diff.
+- Binary files and files over 1.5 MB are listed but not shown.
+
+The same section has the **git actions** of VS Code's Source Control view:
+
+- **Stage and unstage** a file (hover it and use **＋** or **−**), or a whole group; **↶** discards a file's changes (a confirmation lists what is lost; an untracked file is deleted).
+- **Commit** with a message in the box (Ctrl+Enter). With nothing staged the button reads *Commit All* and offers to stage everything. The **▾** next to it has *Commit All*, *Commit (Amend)*, *Commit & Push* and *Commit & Sync*.
+- **↓ Pull**, **↑ Push** (the first push of a branch sets its upstream, `push -u`), **⟳ Sync** (pull, then push), and in **⋯**: *Pull (Rebase)*, *Push (Force, with lease)*, *Fetch*, *Stash*, *Stash (include untracked)*, *Pop stash* and *Undo last commit* (a soft reset: the changes stay staged).
+- The branch name is a button: **switch branch** (local ones, and remote ones that become local), or **create a branch** and switch to it.
+- Every action shows what git answered; a failure opens a dialog with git's own message.
+
+Network actions never wait for a password: git runs without a terminal, so push, pull and fetch need credentials that work on their own (an SSH key without a passphrase, or one loaded in an agent the server can reach, or a stored HTTPS credential). When they do not, the dialog shows git's error. Hooks (`pre-commit` and the rest) run as they do on the command line.
 
 It needs `git` on the machine; without it the section is not shown. On a narrow screen (a phone) the left column is hidden, and so is this view.
 

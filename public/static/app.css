@@ -984,3 +984,31 @@ body.resizing #main { pointer-events: none; }
 .gd-actions [hidden] { display: none !important; }
 .gd-newpane { display: flex; flex-direction: column; min-width: 0; }
 .gd-edhost { flex: 1; min-height: 0; }
+
+/* ---- git actions in the Changes section ---- */
+.chg-branch { border: 0; background: none; cursor: pointer; padding: 0; font-family: var(--sans); }
+.chg-branch:hover { color: var(--accent); }
+.chg-bar { display: flex; gap: 4px; padding: 2px 8px; }
+.chg-bar .tool-btn { flex: 1; min-width: 0; padding: 3px 0; text-align: center; }
+.chg-commit { padding: 2px 8px 4px; }
+.chg-msg {
+  display: block; width: 100%; min-height: 44px; max-height: 180px; resize: vertical; padding: 5px 7px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--text); font: 12.5px/1.4 var(--sans);
+}
+.chg-msg:focus { outline: none; border-color: var(--accent); }
+.chg-commitrow { display: flex; gap: 4px; margin-top: 4px; }
+.chg-commitbtn { flex: 1; min-width: 0; }
+.chg-commitmore { flex: none; padding: 3px 8px; }
+.chg-run { padding: 0 10px; font-size: 11px; color: var(--muted); }
+.chg-run:empty { display: none; }
+.chg-list { display: flex; flex-direction: column; gap: 1px; }
+.chg-group:focus-visible, .chg:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.chg-acts { display: none; flex: none; gap: 1px; margin-left: auto; }
+.chg:hover .chg-acts, .chg:focus-within .chg-acts, .chg-group:hover .chg-acts, .chg-group:focus-within .chg-acts { display: inline-flex; }
+.chg-act { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 5px; font: 13px/1.3 var(--mono); border-radius: 3px; }
+.chg-act:hover:not(:disabled) { background: var(--line); color: var(--text); }
+.chg-act.danger:hover:not(:disabled) { color: var(--err); }
+.chg-act:disabled { opacity: .4; cursor: default; }
+.chg-group { text-transform: none; letter-spacing: 0; }
+.chg-group .chg-gname { text-transform: uppercase; letter-spacing: .04em; }
+.modal p { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40vh; overflow: auto; }
