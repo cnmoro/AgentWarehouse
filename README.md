@@ -4,7 +4,7 @@ A web app that keeps all your terminals, remote connections and desktop in one b
 
 [![Demo: signing in, switching sessions, split screen, files, SSH connections and the desktop](docs/demo.gif)](docs/demo.mp4)
 
-<sub>The demo above (click it for the full-quality video) is a clean throwaway setup, not a real machine.</sub>
+<sub>The demo above (click it for the full-quality video) walks through sessions, split screen, files, SSH connections, the git changes view (diff, edit, commit and push) and the desktop. It is a clean throwaway setup, not a real machine.</sub>
 
 ## Install it with an AI agent
 
@@ -41,7 +41,8 @@ The manual steps in [Setup](#setup) below are the same work, for reading or for 
 <td><a href="docs/images/files-details.png"><img src="docs/images/files-details.png" alt="File explorer in the details view"></a><br><b>Details view.</b> Sortable columns, a filter box, keyboard navigation like a desktop file manager, and pinned places.</td>
 </tr>
 <tr>
-<td colspan="2"><a href="docs/images/git-diff.png"><img src="docs/images/git-diff.png" alt="Git changes list and a side-by-side diff with syntax highlighting"></a><br><b>Git changes.</b> In a git repository, Files lists the changed files (staged, modified, added, deleted, renamed, untracked) under <i>Pinned</i>, and a click opens the diff, side by side or inline, with syntax highlighting, like VS Code. You can edit the file right there, stage, commit (with a message), push, pull and switch branches.</td>
+<td><a href="docs/images/git-diff.png"><img src="docs/images/git-diff.png" alt="Git changes list with a commit box and a side-by-side diff"></a><br><b>Git changes.</b> In a git repository, Files lists the changed files (staged, modified, added, deleted, renamed, untracked) under <i>Pinned</i>, with a commit box and pull, push and sync buttons. A click opens the diff, side by side or inline, with syntax highlighting, like VS Code.</td>
+<td><a href="docs/images/git-edit.png"><img src="docs/images/git-edit.png" alt="Editing the file on the right-hand side of the diff"></a><br><b>Edit in place.</b> <i>Edit</i> turns the right-hand side of the diff (or the preview of any text file) into an editor. Changed lines are marked as you type, Ctrl+S saves, and a file that changed on disk meanwhile is never overwritten without asking.</td>
 </tr>
 </table>
 
