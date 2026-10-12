@@ -53,7 +53,7 @@ const Vnc = (() => {
             <option value="fluid">Fluid (video)</option><option value="vnc">VNC</option>
           </select>
           <span class="vnc-fluidopts">
-            <select class="vnc-codec" aria-label="Video codec" title="Video codec. H.264 is the lightest (the GPU encodes it when there is one); VP9 and AV1 need more CPU."></select>
+            <select class="vnc-codec" aria-label="Video codec" title="Video codec. H.264 has the lowest delay. VP9 and AV1 look better at low bit rates but browsers decode them with more delay and the server needs more CPU."></select>
             <select class="vnc-fps" aria-label="Frames per second" title="Frames per second"><option value="30">30 fps</option><option value="45">45 fps</option><option value="60">60 fps</option></select>
             <select class="vnc-mbps" aria-label="Bit rate" title="Video bit rate: higher is sharper and uses more network"><option value="4">4 Mbps</option><option value="8">8 Mbps</option><option value="12">12 Mbps</option><option value="20">20 Mbps</option><option value="35">35 Mbps</option></select>
           </span>
@@ -393,7 +393,7 @@ const Vnc = (() => {
     if (!el.codec) return;
     const list = v.codecs.length ? v.codecs : ['h264'];
     if (!list.includes(v.codec)) v.codec = list[0];
-    el.codec.innerHTML = list.map((c) => `<option value="${c}">${CODEC_NAME[c]}${c === 'h264' && v.gpu ? ' (GPU)' : ''}</option>`).join('');
+    el.codec.innerHTML = list.map((c) => `<option value="${c}">${CODEC_NAME[c]}${c === 'h264' ? (v.gpu ? ' (GPU)' : ' (low delay)') : ' (more delay)'}</option>`).join('');
     el.codec.value = v.codec;
   }
   function syncModeUI() {
