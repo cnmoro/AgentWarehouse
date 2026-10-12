@@ -53,7 +53,7 @@ const Vnc = (() => {
             <option value="fluid">Fluid (video)</option><option value="vnc">VNC</option>
           </select>
           <span class="vnc-fluidopts">
-            <select class="vnc-codec" aria-label="Video codec" title="Video codec. H.264 has the lowest delay. VP9 and AV1 look better at low bit rates but browsers decode them with more delay and the server needs more CPU."></select>
+            <select class="vnc-codec" aria-label="Video codec" title="Video codec. H.264 has the lowest delay. VP9 looks better at low bit rates but has more delay and needs more CPU."></select>
             <select class="vnc-fps" aria-label="Frames per second" title="Frames per second"><option value="30">30 fps</option><option value="45">45 fps</option><option value="60">60 fps</option></select>
             <select class="vnc-mbps" aria-label="Bit rate" title="Video bit rate: higher is sharper and uses more network"><option value="4">4 Mbps</option><option value="8">8 Mbps</option><option value="12">12 Mbps</option><option value="20">20 Mbps</option><option value="35">35 Mbps</option></select>
           </span>
@@ -532,24 +532,11 @@ const Vnc = (() => {
     startStream();
   }
 
-  // Raw stream in: H.264 is split into frames at each access unit delimiter, VP9 and AV1 come in IVF frames.
-  function feedRaw(st, msg) {
-    const end = msg.length === 1 && msg[0] === 1; // the server says the frame is complete
-    const bytes = msg.subarray(1);
-    if (!end) st.buf = st.buf.length ? concat([st.buf, bytes]) : bytes;
-    if (v.codec === 'h264') {
-      for (;;) {
-        const b = st.buf;
-        const next = nextAud(b, 4);
-        if (next < 0) break;
-        const au = b.slice(0, next);
-        st.buf = b.subarray(next);
-        wcFrame(st, au);
-      }
-      // No need to wait for the next frame's delimiter to know this one is whole.
-      if (end && st.buf.length && nextAud(st.buf, 0) === 0) { const au = st.buf; st.buf = new Uint8Array(0); wcFrame(st, au); }
-      return;
-    }
+  // Raw stream in: H.264 comes as FLV (every frame is a tag of known size, so a frame is never cut in half),
+  // VP9 as IVF frames.
+  function feedRaw(st, bytes) {
+    st.buf = st.buf.length ? concat([st.buf, bytes]) : bytes;
+    if (v.codec === 'h264') return feedFlv(st);
     if (!st.ivf) { if (st.buf.length < 32) return; st.buf = st.buf.subarray(32); st.ivf = true; }
     for (;;) {
       const b = st.buf;
@@ -558,39 +545,32 @@ const Vnc = (() => {
       if (b.length < 12 + size) break;
       const fr = b.slice(12, 12 + size);
       st.buf = b.subarray(12 + size);
-      wcFrame(st, fr);
+      wcFrame(st, fr, !(fr[0] & 0x0c), 'vp09.00.51.08');
     }
   }
-  // Where the next access unit delimiter (NAL type 9) starts, counting its zero byte, or -1.
-  function nextAud(b, from) {
-    for (let i = from; i + 4 <= b.length; i++) {
-      if (b[i + 2] === 1 && b[i + 1] === 0 && b[i] === 0 && (b[i + 3] & 31) === 9) return i > 0 && b[i - 1] === 0 ? i - 1 : i;
-    }
-    return -1;
-  }
-  const hasNal = (b, type) => {
-    for (let i = 0; i + 4 <= b.length; i++) if (b[i] === 0 && b[i + 1] === 0 && b[i + 2] === 1 && (b[i + 3] & 31) === type) return i + 3;
-    return -1;
-  };
 
-  function wcFrame(st, data) {
-    if (st.closed) return;
-    let key = st.n === 0;
-    let codec = '';
-    if (v.codec === 'h264') {
-      if (nextAud(data, 0) !== 0) return; // not the start of a frame: never feed the decoder half a frame
-      key = hasNal(data, 5) >= 0;
-      const sps = hasNal(data, 7);
-      if (!st.dec && sps >= 0) codec = `avc1.${[1, 2, 3].map((k) => data[sps + k].toString(16).padStart(2, '0')).join('')}`;
-    } else if (v.codec === 'vp9') {
-      key = !(data[0] & 0x0c);
-      codec = 'vp09.00.51.08';
-    } else {
-      codec = 'av01.0.13M.08';
+  // FLV: a 13-byte header, then tags of known size. A video tag holds one frame in AVCC form; the first one carries the avcC record.
+  function feedFlv(st) {
+    if (!st.flv) { if (st.buf.length < 13) return; st.buf = st.buf.subarray(13); st.flv = true; }
+    for (;;) {
+      const b = st.buf;
+      if (b.length < 11) return;
+      const size = (b[1] << 16) | (b[2] << 8) | b[3];
+      if (b.length < 11 + size + 4) return;
+      const body = b.subarray(11, 11 + size);
+      const type = b[0];
+      st.buf = b.subarray(11 + size + 4);
+      if (type !== 9 || size < 5) continue; // script data and anything that is not video
+      if (body[1] === 0) st.avcc = body.slice(5);
+      else if (body[1] === 1 && st.avcc) wcFrame(st, body.slice(5), body[0] >> 4 === 1, `avc1.${[1, 2, 3].map((k) => st.avcc[k].toString(16).padStart(2, '0')).join('')}`, st.avcc);
     }
+  }
+
+  function wcFrame(st, data, key, codec, description) {
+    if (st.closed) return;
     if (!st.dec) {
       st.pre.push({ data, key });
-      if (codec && !st.starting) wcStart(st, codec);
+      if (!st.starting) wcStart(st, codec, description);
       return;
     }
     wcDecode(st, data, key);
@@ -609,9 +589,10 @@ const Vnc = (() => {
     startStream();
   }
 
-  function wcStart(st, codec) {
+  function wcStart(st, codec, description) {
     st.starting = true;
     const config = { codec, optimizeForLatency: true };
+    if (description) config.description = description;
     VideoDecoder.isConfigSupported(config).then((r) => {
       if (st.closed) return;
       if (!r.supported) return wcFallback(`${codec} is not supported`);
@@ -935,7 +916,7 @@ const Vnc = (() => {
     if (el.target) el.target.hidden = !on;
   }
 
-  // The server's list of what it can stream, e.g. "vnc-fluid:h264+vp9+av1+gpu".
+  // The server's list of what it can stream, e.g. "vnc-fluid:h264+vp9+gpu".
   function setFluid(feature) {
     const parts = feature ? feature.slice('vnc-fluid:'.length).split('+') : [];
     v.fluidOk = parts.length > 0;
