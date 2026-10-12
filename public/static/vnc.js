@@ -374,7 +374,7 @@ const Vnc = (() => {
       showCurrentSize();
       const st = v.stream;
       if (st && s && st.size && (st.size.w !== s.w || st.size.h !== s.h)) { st.size = s; restartStream(250); } // the desktop changed size: capture again
-      const live = st && st.fps ? ` · ${st.fps} fps ${CODEC_NAME[v.codec]}` : '';
+      const live = st && st.fps ? ` · ${st.fps} fps ${CODEC_NAME[v.codec]}${st.wc ? ' · WebCodecs' : ' · MSE'}` : '';
       if (s && v.rfb) setStatus(`${v.shown ? `${v.shown} · ` : ''}${s.w} × ${s.h}${v.auto ? ' · follows the window' : ''}${v.fluidNow ? (live || ' · video…') : ''}`, 'ok');
     }, 500);
   }
