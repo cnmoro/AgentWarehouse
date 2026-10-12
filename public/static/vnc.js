@@ -530,7 +530,8 @@ const Vnc = (() => {
   }
 
   // Raw stream in: H.264 is split into frames at each access unit delimiter, VP9 and AV1 come in IVF frames.
-  function feedRaw(st, bytes) {
+  function feedRaw(st, msg) {
+    const bytes = msg.subarray(1);
     st.buf = st.buf.length ? concat([st.buf, bytes]) : bytes;
     if (v.codec === 'h264') {
       for (;;) {
@@ -541,6 +542,8 @@ const Vnc = (() => {
         st.buf = b.subarray(next);
         wcFrame(st, au);
       }
+      // The server says the frame is complete: no need to wait for the next frame's delimiter to know it.
+      if (msg[0] === 1 && st.buf.length && nextAud(st.buf, 0) === 0) { const au = st.buf; st.buf = new Uint8Array(0); wcFrame(st, au); }
     } else {
       if (!st.ivf) { if (st.buf.length < 32) return; st.buf = st.buf.subarray(32); st.ivf = true; }
       for (;;) {
