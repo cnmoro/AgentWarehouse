@@ -21,7 +21,7 @@ Several shells on this machine, open in the browser. Each terminal is a tab in t
 | **SSH connections** | OpenSSH client (`ssh`, `ssh-keygen`) | `openssh-client` |
 | SSH with `.ppk` keys | `puttygen` | `putty-tools` |
 | **Desktop (VNC)** | a VNC server running as the same user, such as TigerVNC's `Xvnc`, with a desktop session | `tigervnc-standalone-server tigervnc-common tigervnc-tools` plus a desktop (`xfce4`, `dbus-x11`) |
-| Explorer thumbnails of videos and images, and the Desktop's **Fluid** mode | `ffmpeg` (with `x11grab` and `libx264`; `libvpx-vp9` and `libsvtav1` add the VP9 and AV1 choices; an NVIDIA GPU with `h264_nvenc` makes H.264 almost free) | `ffmpeg` |
+| Explorer thumbnails of videos and images, and the Desktop's **Fluid** mode | `ffmpeg` (with `x11grab` and `libx264`; `libvpx-vp9` and `libsvtav1` add the VP9 and AV1 choices; `STREAM_NVENC=1` uses an NVIDIA GPU's `h264_nvenc` for H.264, but its streams make some browsers' GPU decoders add lag) | `ffmpeg` |
 | Explorer "Trash" | `gio` | `libglib2.0-bin` (usually already there) |
 
 Only Node and the build tools are required to start; each other row switches on one feature, and the page hides or explains a feature whose tool is missing. noVNC, xterm.js, marked and DOMPurify come from npm, so they need nothing more.
