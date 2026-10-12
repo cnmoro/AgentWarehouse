@@ -308,6 +308,7 @@ lib/files.js         file explorer API
 lib/vnc.js           WebSocket relay to the VNC server
 lib/stream.js        Fluid desktop: ffmpeg screen capture to video over a WebSocket
 lib/ssh.js           saved SSH connections and key conversion
+LICENSE             MIT license
 INSTALL.md          step-by-step installation instructions for an AI agent
 docs/               screenshots and the demo video used in this README
 bin/, scripts/wt-ssh.js   wt-ssh and the askpass helper on every terminal's PATH
@@ -315,3 +316,7 @@ scripts/set-user.js  create, update, or remove logins
 public/              login page and the app (plain JS, no build step)
 data/                users.json, tabs.json, history/ (git-ignored)
 ```
+
+## License
+
+[MIT](LICENSE). The bundled libraries (xterm.js, noVNC, marked, DOMPurify and the rest of `package.json`) have their own licenses.
