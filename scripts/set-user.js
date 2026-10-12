@@ -26,7 +26,22 @@ function loadUsers() {
 
 const MIN_LENGTH = 12;
 
+// Not a terminal (a script or an agent pipes the answers in): one line each for the email, the password and,
+// optionally, the password again.   printf '%s\n%s\n' "$EMAIL" "$PASSWORD" | npm run set-user
+let piped = null;
+function readPiped() {
+  if (!piped) piped = new Promise((resolve) => {
+    let text = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (d) => { text += d; });
+    process.stdin.on('end', () => resolve(text.split(/\r?\n/)));
+  });
+  return piped;
+}
+let pipedAt = 0;
+
 function ask(question, { hidden = false } = {}) {
+  if (!process.stdin.isTTY) return readPiped().then((lines) => lines[pipedAt++] ?? '');
   return new Promise((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
     if (hidden) {
@@ -61,7 +76,7 @@ async function main() {
   if (password.length < MIN_LENGTH) throw new Error(`Password must be at least ${MIN_LENGTH} characters.`);
   if (password.length > 1024) throw new Error('Password must be at most 1024 characters.');
   if (password.toLowerCase().includes(email.split('@')[0])) throw new Error('Password must not contain the email name.');
-  const again = await ask('Repeat password: ', { hidden: true });
+  const again = process.stdin.isTTY ? await ask('Repeat password: ', { hidden: true }) : password;
   if (again !== password) throw new Error('Passwords do not match.');
 
   users[email] = { hash: await hashPassword(password), updated: new Date().toISOString() };

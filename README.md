@@ -6,6 +6,20 @@ A web app that keeps all your terminals, remote connections and desktop in one b
 
 <sub>The demo above (click it for the full-quality video) is a clean throwaway setup, not a real machine.</sub>
 
+## Install it with an AI agent
+
+The simplest and recommended way to install Agent Warehouse is to ask a coding agent (Claude Code, Codex, opencode or similar) to do it for you, on the machine where it should run. Send this request:
+
+> Install AgentWarehouse for me, instructions in INSTALL.md
+
+If you have not cloned the repository yet, give the agent the address as well:
+
+> Install AgentWarehouse for me from https://github.com/cnmoro/AgentWarehouse, instructions in INSTALL.md
+
+[**INSTALL.md**](INSTALL.md) is written for the agent. It checks the machine, installs the packages (Node.js, the build tools, and the optional SSH, ffmpeg and VNC parts), clones and builds the app, creates your login with a generated password, runs it as a systemd service, can set up the desktop and HTTPS through Tailscale, checks that everything works, and ends with a short report that has the address and the password. It never exposes the app to the public internet and asks you before it changes anything it should not.
+
+The manual steps in [Setup](#setup) below are the same work, for reading or for doing by hand.
+
 - **Rendering:** [xterm.js](https://xtermjs.org/), the same terminal emulator VS Code uses. `clear`, colors, progress bars, and full-screen TUIs (`htop`, `vim`, `less`) all work.
 - **Shells:** [node-pty](https://github.com/microsoft/node-pty) runs a real login shell for each tab.
 - **Reconnects:** the server keeps a headless xterm.js copy of each screen. If you reload the page, lose the connection, or open a second device, you get the current screen and scrollback back, including terminal modes such as mouse reporting and the scroll region. Programs keep running while no browser is connected.
@@ -37,6 +51,8 @@ On a phone the sidebar becomes a drawer and a key bar adds Esc, Tab, Ctrl and th
 
 ## Setup
 
+This is the manual version of what [INSTALL.md](INSTALL.md) has an agent do.
+
 ### What you need on the machine
 
 | Needed for | What | Debian/Ubuntu package |
@@ -63,7 +79,7 @@ sudo apt install build-essential python3 openssh-client putty-tools ffmpeg \
 
 ```sh
 npm install
-npm run set-user        # prompts for email and password (min. 12 characters)
+npm run set-user        # prompts for email and password (min. 12 characters); a script can pipe them in, see INSTALL.md
 npm start
 ```
 
@@ -292,6 +308,7 @@ lib/files.js         file explorer API
 lib/vnc.js           WebSocket relay to the VNC server
 lib/stream.js        Fluid desktop: ffmpeg screen capture to video over a WebSocket
 lib/ssh.js           saved SSH connections and key conversion
+INSTALL.md          step-by-step installation instructions for an AI agent
 docs/               screenshots and the demo video used in this README
 bin/, scripts/wt-ssh.js   wt-ssh and the askpass helper on every terminal's PATH
 scripts/set-user.js  create, update, or remove logins
