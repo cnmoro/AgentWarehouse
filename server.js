@@ -580,7 +580,24 @@ setInterval(() => {
 
 // ---------------------------------------------------------------- lifecycle
 
+// Starts what runs once the first address is listening (not before: with nothing to serve, the shells would only be
+// started to be stopped again).
+let started = false;
+function onFirstListening() {
+  if (started) return;
+  started = true;
+  terminals.start();
+  vnc.watch();
+  vstream.probe();
+}
+
 server.on('error', (err) => {
+  // The main address is not there (Tailscale is down) but others are listed in LISTEN_ALSO: serve on those and keep trying.
+  if (LISTEN_ALSO.length && ['EADDRNOTAVAIL', 'ENETDOWN', 'ENETUNREACH'].includes(err.code)) {
+    console.error(`Cannot listen on ${HOST}:${PORT} yet (${err.code}); serving on ${LISTEN_ALSO.join(', ')} meanwhile and trying again in 10 s.`);
+    setTimeout(() => { if (!shuttingDown) server.listen(PORT, HOST); }, 10_000).unref();
+    return;
+  }
   // e.g. port already in use: exit instead of lingering with shells and no listener.
   console.error(`Cannot listen on ${HOST}:${PORT}: ${err.message}`);
   process.exit(1);
@@ -596,9 +613,7 @@ setInterval(() => {
 }, 30_000).unref();
 
 server.listen(PORT, HOST, () => {
-  terminals.start();
-  vnc.watch();
-  vstream.probe();
+  onFirstListening();
   console.log(`Web terminal listening on http://${HOST.includes(':') ? `[${HOST}]` : HOST}:${PORT}`);
   console.log(`Accepted host names: ${[...ALLOWED_HOSTS].join(', ')}`);
 });
@@ -613,7 +628,7 @@ for (const addr of LISTEN_ALSO) {
   extraServers.push(srv);
   const where = `http://${addr.includes(':') ? `[${addr}]` : addr}:${PORT}`;
   const start = () => srv.listen(PORT, addr);
-  srv.on('listening', () => console.log(`Also listening on ${where}`));
+  srv.on('listening', () => { onFirstListening(); console.log(`Also listening on ${where}`); });
   srv.on('error', (err) => {
     console.error(`Cannot listen on ${addr}:${PORT} yet (${err.code || err.message}); trying again in 10 s.`);
     setTimeout(() => { if (!shuttingDown) start(); }, 10_000).unref();
