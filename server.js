@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('fs');
 const http = require('http');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
@@ -21,6 +22,9 @@ const PORT = Number(process.env.PORT || 7681);
 const TRUST_PROXY = process.env.TRUST_PROXY === '1';
 const TAILSCALE = tailscaleSelf();
 const HOST = process.env.HOST || (TRUST_PROXY ? '127.0.0.1' : TAILSCALE.ipv4 || '127.0.0.1');
+// More addresses to listen on besides HOST (for example this machine's address on the home network, so the page also opens
+// from other devices there): LISTEN_ALSO=192.168.50.10 (comma-separated). Each one is also an accepted host name.
+const LISTEN_ALSO = String(process.env.LISTEN_ALSO || '').split(',').map((a) => a.trim()).filter(Boolean);
 const COOKIE = 'wt_sid';
 const MAX_WS_BUFFER = 16 * 1024 * 1024;
 
@@ -44,7 +48,7 @@ function isLoopback(host) {
 // Host names the browser may use to reach us. Anything else is refused, which
 // stops DNS-rebinding pages from talking to the server under their own name.
 const ALLOWED_HOSTS = new Set([
-  'localhost', '127.0.0.1', '::1', HOST, os.hostname(), ...TAILSCALE.names,
+  'localhost', '127.0.0.1', '::1', HOST, ...LISTEN_ALSO, os.hostname(), ...TAILSCALE.names,
   ...String(process.env.ALLOWED_HOSTS || '').split(','),
 ].map((h) => h.trim().toLowerCase()).filter(Boolean));
 
@@ -81,7 +85,13 @@ for (const name of ['HISTORY_LINES', 'HISTORY_MB']) {
     process.exit(EX_CONFIG);
   }
 }
-if (HOST === '0.0.0.0' || HOST === '::') {
+for (const a of LISTEN_ALSO) {
+  if (!net.isIP(a)) {
+    console.error(`LISTEN_ALSO has "${a}", which is not an IP address.`);
+    process.exit(EX_CONFIG);
+  }
+}
+if (HOST === '0.0.0.0' || HOST === '::' || LISTEN_ALSO.some((a) => a === '0.0.0.0' || a === '::')) {
   console.warn('WARNING: listening on all interfaces. Anyone who can reach this port gets a login page for a shell.');
 }
 
@@ -294,7 +304,7 @@ const vncOpen = new Map(); // session id -> connections
 const streamOpen = new Map(); // session id -> video streams
 let streamsTotal = 0;
 
-server.on('upgrade', (req, socket, head) => {
+function onUpgrade(req, socket, head) {
   socket.on('error', () => {});
   let session = null;
   let route = null;
@@ -347,7 +357,8 @@ server.on('upgrade', (req, socket, head) => {
     });
   }
   wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws, session));
-});
+}
+server.on('upgrade', onUpgrade);
 
 function closeSocketsFor(sessionId) {
   for (const c of clients) if (c.sessionId === sessionId) c.ws.close(4001, 'logged out');
@@ -592,6 +603,24 @@ server.listen(PORT, HOST, () => {
   console.log(`Accepted host names: ${[...ALLOWED_HOSTS].join(', ')}`);
 });
 
+// The extra addresses (LISTEN_ALSO): the same app on more servers. An address that is not there yet (a network that comes
+// up after the service did) is tried again every 10 s instead of stopping the service.
+const extraServers = [];
+for (const addr of LISTEN_ALSO) {
+  if (addr === HOST) continue;
+  const srv = http.createServer(app);
+  srv.on('upgrade', onUpgrade);
+  extraServers.push(srv);
+  const where = `http://${addr.includes(':') ? `[${addr}]` : addr}:${PORT}`;
+  const start = () => srv.listen(PORT, addr);
+  srv.on('listening', () => console.log(`Also listening on ${where}`));
+  srv.on('error', (err) => {
+    console.error(`Cannot listen on ${addr}:${PORT} yet (${err.code || err.message}); trying again in 10 s.`);
+    setTimeout(() => { if (!shuttingDown) start(); }, 10_000).unref();
+  });
+  start();
+}
+
 // Last line of defence: an unexpected exception must not take every shell down
 // with the process. Log it and keep serving.
 process.on('uncaughtException', (err) => console.error('uncaught exception:', err));
@@ -605,6 +634,7 @@ async function shutdown() {
   setTimeout(() => process.exit(0), 8000).unref();
   try {
     server.close();
+    for (const x of extraServers) x.close();
     for (const c of clients) c.ws.terminate();
     await terminals.shutdown();
   } catch (err) {

@@ -109,6 +109,8 @@ The app finds the running `Xvnc` by itself (or set `VNC_PORT`, `VNC_HOST`, `VNC_
 
 With no `HOST` set, the server binds only to this machine's Tailscale IPv4 address on port 7681, e.g. `http://100.x.y.z:7681`. Other networks can't reach it. If Tailscale is not up yet, the server exits and systemd retries.
 
+To open the page from other devices on the home network as well, add this machine's address on that network (not `0.0.0.0`) to `LISTEN_ALSO`, e.g. `LISTEN_ALSO=192.168.1.20`; the server then listens on both and accepts that address as a host name. That traffic is plain HTTP, so the password and the session cookie cross the network unencrypted: do it only on a network you trust, and give the machine a fixed address (a DHCP reservation). The address is retried every 10 s if the network is not up yet when the service starts.
+
 Requests must use one of this machine's own names: its Tailscale IPs, its MagicDNS name, its hostname or localhost. Other host names get a 421 error, which blocks DNS-rebinding attacks from web pages. Add extra names to `ALLOWED_HOSTS` (comma-separated) if you need them.
 
 To run it as a service, see `deploy/web-terminal.service`.
