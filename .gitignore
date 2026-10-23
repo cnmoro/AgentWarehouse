@@ -4,3 +4,4 @@ data/
 .claude/settings.local.json
 data-*/
 deploy/sandbox/resolv.conf
+.venv-stt/

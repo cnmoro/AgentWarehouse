@@ -13,6 +13,7 @@ const files = require('./lib/files');
 const ssh = require('./lib/ssh');
 const vnc = require('./lib/vnc');
 const vstream = require('./lib/stream');
+const stt = require('./lib/stt');
 
 // Configuration errors exit with 78 (EX_CONFIG); the systemd unit does not
 // restart on that code, since retrying cannot help.
@@ -281,6 +282,7 @@ app.get('/', (req, res) => {
 
 app.use('/api/files', files.router({ sessionFrom, sameOrigin, dataDir: DATA_DIR, terminals }));
 app.use('/api/ssh', ssh.router({ sessionFrom, sameOrigin, dataDir: DATA_DIR, terminals }));
+app.use('/api/stt', stt.router({ sessionFrom, sameOrigin }));
 
 app.use((req, res) => res.sendStatus(404));
 

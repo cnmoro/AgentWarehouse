@@ -1012,3 +1012,20 @@ body.resizing #main { pointer-events: none; }
 .chg-group { text-transform: none; letter-spacing: 0; }
 .chg-group .chg-gname { text-transform: uppercase; letter-spacing: .04em; }
 .modal p { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40vh; overflow: auto; }
+
+/* ---------- dictation button (stt.js) ---------- */
+#mic {
+  position: absolute; right: 22px; bottom: 22px; z-index: 6; width: 48px; height: 48px; border-radius: 50%;
+  display: grid; place-items: center; padding: 0; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--line); box-shadow: 0 2px 10px rgba(0,0,0,.4); opacity: .55; cursor: pointer;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  transition: opacity .15s, background .15s, transform .15s;
+}
+#mic:hover, #mic:focus-visible { opacity: 1; }
+#mic.rec { opacity: 1; background: var(--err); color: #fff; border-color: var(--err); transform: scale(1.12); animation: mic-pulse 1.1s ease-out infinite; }
+#mic.busy { opacity: 1; cursor: progress; border-color: var(--accent); animation: mic-spin 1s linear infinite; border-top-color: transparent; }
+#mic.busy svg { animation: mic-spin 1s linear infinite reverse; }
+@keyframes mic-pulse { 0% { box-shadow: 0 0 0 0 rgba(240,112,106,.55); } 100% { box-shadow: 0 0 0 18px rgba(240,112,106,0); } }
+@keyframes mic-spin { to { transform: rotate(360deg); } }
+@media (max-width: 700px) { #mic { bottom: 58px; right: 14px; } }
+@media (prefers-reduced-motion: reduce) { #mic.rec, #mic.busy, #mic.busy svg { animation: none; } }

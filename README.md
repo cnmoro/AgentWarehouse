@@ -70,6 +70,7 @@ This is the manual version of what [INSTALL.md](INSTALL.md) has an agent do.
 | SSH with `.ppk` keys | `puttygen` | `putty-tools` |
 | **Desktop (VNC)** | a VNC server running as the same user, such as TigerVNC's `Xvnc`, with a desktop session | `tigervnc-standalone-server tigervnc-common tigervnc-tools` plus a desktop (`xfce4`, `dbus-x11`) |
 | Explorer thumbnails of videos and images, and the Desktop's **Fluid** mode | `ffmpeg` (with `x11grab` and `libx264`; `libvpx-vp9` adds the VP9 choice; `STREAM_NVENC=1` uses an NVIDIA GPU's `h264_nvenc` for H.264, but its streams make some browsers' GPU decoders add lag) | `ffmpeg` |
+| **Dictation** (microphone button) | [soda-stt](https://pypi.org/project/soda-stt/) in a Python 3.12+ virtual environment named `.venv-stt` in the project folder, and `ffmpeg` | `python3.12-venv` (or `uv`) |
 | Explorer "Trash" | `gio` | `libglib2.0-bin` (usually already there) |
 
 Only Node and the build tools are required to start; each other row switches on one feature, and the page hides or explains a feature whose tool is missing. noVNC, xterm.js, marked and DOMPurify come from npm, so they need nothing more.
@@ -267,6 +268,16 @@ If this machine runs a VNC server (found automatically: the user's own `Xvnc`, o
 
 Resizing needs a VNC server that supports it (TigerVNC's `Xvnc` does).
 
+### Dictation
+
+A round microphone button sits at the bottom right of the terminals. **Hold it, speak, let go**: the recording is transcribed on the server and the text is typed into the tab that was on screen (it is not sent with Enter, so you can read and fix it first). Recognition is Chrome's offline speech engine through [soda-stt](https://pypi.org/project/soda-stt/); nothing leaves the machine. The language is `pt-BR`; set `STT_LOCALE` in `.env` for another one the package carries. The button shows only when the server has the engine:
+
+```sh
+python3.12 -m venv .venv-stt && .venv-stt/bin/pip install soda-stt   # about 200 MB, with the pt-BR model; needs ffmpeg
+```
+
+(`STT_PYTHON` points at another interpreter that has soda-stt.) The engine starts on first use and stops after five idle minutes. Browsers only allow the microphone on **HTTPS** or on `localhost`, so over plain `http://` on the Tailscale or home-network address the button explains that instead of recording; see [HTTPS with `tailscale serve`](#https-with-tailscale-serve-recommended). On a phone, holding the button also works by touch.
+
 ### Long history
 
 The terminal itself keeps the last 10,000 lines (`SCROLLBACK`). Everything older is moved to disk, up to 200,000 lines per tab by default (`HISTORY_LINES`), and loaded only when you look at it:
@@ -348,6 +359,7 @@ lib/files.js         file explorer API
 lib/vnc.js           WebSocket relay to the VNC server
 lib/stream.js        Fluid desktop: ffmpeg screen capture to video over a WebSocket
 lib/ssh.js           saved SSH connections and key conversion
+lib/stt.js           dictation: recordings in, text out, through scripts/stt-worker.py
 LICENSE             MIT license
 INSTALL.md          step-by-step installation instructions for an AI agent
 docs/               screenshots and the demo video used in this README
