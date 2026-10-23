@@ -2728,6 +2728,7 @@ const Files = (() => {
     fb.open = true;
     el.root.hidden = false;
     $('#app').classList.add('files-open');
+    markTool('.files-btn', true);
     if (mobile.matches) setSidebar(false);
     // Take the keyboard now, not after loading: an Esc typed meanwhile must
     // not reach the program in the terminal.
@@ -2758,6 +2759,7 @@ const Files = (() => {
     hideDrop();
     el.root.hidden = true;
     $('#app').classList.remove('files-open');
+    markTool('.files-btn', false);
     if (!keepFocus) focusActive();
   }
 

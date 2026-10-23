@@ -893,6 +893,7 @@ const Vnc = (() => {
     v.open = true;
     el.root.hidden = false;
     $('#app').classList.add('vnc-open');
+    markTool('.vnc-btn', true);
     if (mobile.matches) setSidebar(false);
     connect();
   }
@@ -904,6 +905,7 @@ const Vnc = (() => {
     disconnect();
     el.root.hidden = true;
     $('#app').classList.remove('vnc-open');
+    markTool('.vnc-btn', false);
     // The terminal on screen gets the keyboard back (unless another panel is taking it).
     if (!keepFocus && typeof focusActive === 'function') focusActive();
   }

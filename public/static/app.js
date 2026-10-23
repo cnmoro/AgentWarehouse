@@ -270,6 +270,14 @@ setInterval(() => {
 }, 5000);
 
 let toastTimer = null;
+// Highlights the sidebar buttons (full and collapsed rail) of the view that is open.
+function markTool(selector, on) {
+  for (const b of document.querySelectorAll(selector)) {
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+  }
+}
+
 function toast(text, ms = 4000) {
   const el = $('#toast');
   el.textContent = String(text || 'Something went wrong');

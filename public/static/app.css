@@ -1029,3 +1029,6 @@ body.resizing #main { pointer-events: none; }
 @keyframes mic-spin { to { transform: rotate(360deg); } }
 @media (max-width: 700px) { #mic { bottom: 58px; right: 14px; } }
 @media (prefers-reduced-motion: reduce) { #mic.rec, #mic.busy, #mic.busy svg { animation: none; } }
+
+/* The view that is open (Files, Desktop, SSH): its sidebar button stays lit. */
+.head-tool.on, .icon-btn.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--panel-2)); }

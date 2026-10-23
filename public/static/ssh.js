@@ -246,6 +246,7 @@ const Ssh = (() => {
     s.editing = null;
     s.confirming = null;
     el.root.hidden = false;
+    markTool('.ssh-btn', true);
     if (mobile.matches) setSidebar(false);
     render();
     load();
@@ -257,6 +258,7 @@ const Ssh = (() => {
     s.open = false;
     s.editing = null;
     el.root.hidden = true;
+    markTool('.ssh-btn', false);
     if (!keepFocus && typeof focusActive === 'function') focusActive();
   }
 
