@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('fs');
 const http = require('http');
+const https = require('https');
 const net = require('net');
 const os = require('os');
 const path = require('path');
@@ -14,6 +15,7 @@ const ssh = require('./lib/ssh');
 const vnc = require('./lib/vnc');
 const vstream = require('./lib/stream');
 const stt = require('./lib/stt');
+const tls = require('./lib/tls');
 
 // Configuration errors exit with 78 (EX_CONFIG); the systemd unit does not
 // restart on that code, since retrying cannot help.
@@ -296,7 +298,18 @@ app.use((err, req, res, next) => {
 
 // ---------------------------------------------------------------- websocket
 
-const server = http.createServer(app);
+// HTTPS=1: every listener speaks HTTPS with a self-signed certificate (see lib/tls.js).
+const USE_HTTPS = process.env.HTTPS === '1';
+const SCHEME = USE_HTTPS ? 'https' : 'http';
+let tlsOptions = null;
+if (USE_HTTPS) {
+  try { tlsOptions = tls.ensure(DATA_DIR, [...ALLOWED_HOSTS, HOST, ...LISTEN_ALSO]); } catch (e) {
+    console.error(e.message);
+    process.exit(EX_CONFIG);
+  }
+}
+const makeServer = () => (USE_HTTPS ? https.createServer({ key: tlsOptions.key, cert: tlsOptions.cert }, app) : http.createServer(app));
+const server = makeServer();
 const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 });
 const clients = new Set();
 
@@ -616,7 +629,7 @@ setInterval(() => {
 
 server.listen(PORT, HOST, () => {
   onFirstListening();
-  console.log(`Web terminal listening on http://${HOST.includes(':') ? `[${HOST}]` : HOST}:${PORT}`);
+  console.log(`Web terminal listening on ${SCHEME}://${HOST.includes(':') ? `[${HOST}]` : HOST}:${PORT}`);
   console.log(`Accepted host names: ${[...ALLOWED_HOSTS].join(', ')}`);
 });
 
@@ -625,10 +638,10 @@ server.listen(PORT, HOST, () => {
 const extraServers = [];
 for (const addr of LISTEN_ALSO) {
   if (addr === HOST) continue;
-  const srv = http.createServer(app);
+  const srv = makeServer();
   srv.on('upgrade', onUpgrade);
   extraServers.push(srv);
-  const where = `http://${addr.includes(':') ? `[${addr}]` : addr}:${PORT}`;
+  const where = `${SCHEME}://${addr.includes(':') ? `[${addr}]` : addr}:${PORT}`;
   const start = () => srv.listen(PORT, addr);
   srv.on('listening', () => { onFirstListening(); console.log(`Also listening on ${where}`); });
   srv.on('error', (err) => {

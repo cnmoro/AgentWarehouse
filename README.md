@@ -127,6 +127,12 @@ tailscale serve --bg --https=443 http://127.0.0.1:7681
 
 Open `https://<machine>.<tailnet>.ts.net`. HTTPS certificates must be enabled for your tailnet (admin console → DNS → HTTPS Certificates).
 
+### HTTPS without a domain (self-signed)
+
+If you cannot use `tailscale serve`, set `HTTPS=1` in `.env` and restart. The server then speaks HTTPS on every address it listens on, with a certificate it makes itself (`openssl` is needed once; the pair is kept in `data/tls/`, key mode 0600, and made again when the list of addresses changes or 30 days are left). Nothing else changes: same port, same login, and the session cookie becomes `Secure`.
+
+Browsers show a warning the first time, once per device and address. Accept it ("Advanced", then "Proceed") and the page is a secure context, so dictation, the Desktop's WebCodecs and the async clipboard work. Open `https://` instead of `http://` from then on. The traffic is encrypted, but the certificate does not prove who you are talking to, so check the address when you accept it. To use your own certificate, set `HTTPS_CERT` and `HTTPS_KEY` to the two file paths instead. Do not combine it with `TRUST_PROXY=1` (`tailscale serve` already does the HTTPS).
+
 ## Using it
 
 The sidebar lists sessions. Each session has one or more tabs, shown along the top of the terminal; each tab is its own shell.
@@ -360,6 +366,7 @@ lib/vnc.js           WebSocket relay to the VNC server
 lib/stream.js        Fluid desktop: ffmpeg screen capture to video over a WebSocket
 lib/ssh.js           saved SSH connections and key conversion
 lib/stt.js           dictation: recordings in, text out, through scripts/stt-worker.py
+lib/tls.js           self-signed certificate for HTTPS=1
 LICENSE             MIT license
 INSTALL.md          step-by-step installation instructions for an AI agent
 docs/               screenshots and the demo video used in this README
