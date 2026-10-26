@@ -288,7 +288,8 @@ python3.12 -m venv .venv-stt && .venv-stt/bin/pip install soda-stt   # about 200
 
 The terminal itself keeps the last 10,000 lines (`SCROLLBACK`). Everything older is moved to disk, up to 200,000 lines per tab by default (`HISTORY_LINES`), and loaded only when you look at it:
 
-- Scroll to the top of a terminal and a button offers the older lines. **Ctrl+Shift+H** (or ⏱ on the tab) opens the full history of the tab at any time.
+- The page loads a tab only when it is shown, with its newest 400 lines; scrolling to the top brings the rest of the scrollback, in place. The six tabs shown most recently stay loaded, so going back to one is instant; the others are freed and load again when shown. Tabs that are not loaded cost the browser nothing: the server tells it when one of them changed (the yellow dot).
+- Scroll to the top of all of that and a button offers the older lines. **Ctrl+Shift+H** (or ⏱ on the tab) opens the full history of the tab at any time.
 - The history view draws only the rows on screen and fetches the rest from the server as you scroll, so a million lines cost about as much as a hundred. Colours are kept.
 - Search with the box at the top: Enter finds the next older match, Shift+Enter the next newer one; it wraps around at the ends. Searching a million lines takes a fraction of a second.
 - Select and copy text as on any web page. Long lines that the terminal wrapped are copied as one line.

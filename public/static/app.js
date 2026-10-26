@@ -14,6 +14,11 @@ const MAX_TABS = 50;
 const INPUT_CHUNK = 256 * 1024;  // keep each message well under the server's frame limit
 const ACK_EVERY = 32 * 1024;
 const SNAPSHOT_SLICE = 256 * 1024;
+// A tab opens with this much history; the rest of the scrollback loads when it is scrolled to the top.
+const FIRST_LINES = 400;
+// Tabs kept loaded (with their renderer) after they leave the screen, most recently shown first. Switching back to one
+// of them costs nothing; the others are freed and load again (a short snapshot) when shown.
+const KEEP_TABS = matchMedia('(max-width: 700px)').matches ? 2 : 6;
 
 function storage(key, value) {
   try {
@@ -133,7 +138,6 @@ function connect() {
       }
       // The server forgot what this page was attached to. Hidden tabs re-attach
       // when next shown; the visible one re-attaches as soon as the list arrives.
-      bgAttach.clear();
       for (const [id, v] of state.views) {
         if (isShown(id)) v.attached = false;
         else disposeView(id);
@@ -168,7 +172,7 @@ function connect() {
       case 'snap': onSnapshot(msg); break;
       case 'out': onOutput(msg.id, msg.d); break;
       case 'size': onSize(msg); break;
-      case 'act': onAct(msg.id); break;
+      case 'act': onAct(msg); break;
       case 'created': activate(msg.id); break;
       case 'error': toast(msg.msg); break;
       case 'pong': break;
@@ -666,7 +670,8 @@ function openLink(uri) {
   if (/^https?:\/\//i.test(uri)) window.open(uri, '_blank', 'noopener,noreferrer');
 }
 
-// Browsers cap live WebGL contexts (~16), so only the visible terminal gets one.
+// Browsers cap live WebGL contexts (~16): the terminals on screen and the few kept loaded (KEEP_TABS) have one, the
+// rest are freed with their terminal.
 // The GPU renderer caches every glyph/colour pair it draws. A program that
 // animates through many shades (opencode's progress bar, a gradient) keeps
 // producing pairs it has never drawn: the cache grows a page every few seconds
@@ -766,7 +771,7 @@ function showView(v) {
   setWebgl(v, true);
 }
 
-function onSnapshot({ id, d, seq, cols, rows }) {
+function onSnapshot({ id, d, seq, cols, rows, more }) {
   // Keep the reader's place if they had scrolled up into the history.
   const old = state.views.get(id);
   const back = old ? old.term.buffer.active.baseY - old.term.buffer.active.viewportY : 0;
@@ -775,6 +780,7 @@ function onSnapshot({ id, d, seq, cols, rows }) {
   const v = createView(id);
   v.attached = true;
   v.seq = seq;
+  v.more = more === true;
   v.term.resize(cols, rows);
   // Written in slices, each acknowledged as it is parsed, so the server sees
   // progress on a big snapshot instead of one ack at the very end.
@@ -782,7 +788,6 @@ function onSnapshot({ id, d, seq, cols, rows }) {
     const slice = d.slice(i, i + SNAPSHOT_SLICE);
     v.term.write(slice, () => ack(v, slice.length));
   }
-  bgAttach.delete(id);
   if (!isShown(id)) noteOutput(v);
   if (isShown(id)) {
     showView(v);
@@ -825,7 +830,6 @@ function markActivity(id) {
 const ACT_SETTLE = 1000;    // judge once the tab has been quiet this long...
 const ACT_MAX_WAIT = 5000;  // ...or after this long, if it never goes quiet
 const seen = new Map(Object.entries(JSON.parse(storage('wt.seen') || '{}')));
-const bgAttach = new Set(); // hidden tabs being fetched only to compare their screen
 
 // Text of the bottom screenful, without spaces: line wrapping changes after a
 // resize, the words don't. FNV-1a, so localStorage keeps a short number.
@@ -878,18 +882,51 @@ function noteOutput(v) {
   }, wait);
 }
 
-// Fetch a hidden tab quietly; its snapshot and further output are judged like
-// any background tab's.
-function fetchInBackground(id) {
-  if (isShown(id) || bgAttach.has(id)) return;
+// A tab this page has not loaded printed something, or the page asked (`base`): the server sends the fingerprint of
+// its screen, the same as screenHash(), and the tab is never loaded just to look.
+function onAct({ id, h, base }) {
+  if (typeof h !== 'string') return;
   const v = state.views.get(id);
-  if (v && v.attached) return; // its output reaches us directly
-  if (send({ t: 'attach', id })) bgAttach.add(id);
+  if (isShown(id) || (v && v.attached)) return; // its output reaches us directly
+  const before = seen.get(id);
+  if (before === undefined) {
+    // Never viewed in this browser: what it shows now is the starting point.
+    seen.set(id, h);
+    storage('wt.seen', JSON.stringify(Object.fromEntries(seen)));
+  } else if (before !== h && !base) {
+    markActivity(id);
+  }
 }
 
-// The server reports activity in a tab this page isn't attached to.
-function onAct(id) {
-  fetchInBackground(id);
+// Ask for a tab's snapshot: the newest FIRST_LINES lines of history, or all of it (`full`).
+function attachView(v, { full = false } = {}) {
+  if (send(full ? { t: 'attach', id: v.id, refresh: true } : { t: 'attach', id: v.id, lines: FIRST_LINES })) v.attached = true;
+}
+
+// Scrolled to the top of a tab that came with part of its history: load the rest, keeping the place.
+function loadMoreHistory(v) {
+  if (!v.more || v.loadingMore || !state.connected) return;
+  v.loadingMore = true;
+  attachView(v, { full: true });
+}
+
+// Most recently shown first. Tabs past KEEP_TABS that are not on screen are freed.
+const recent = [];
+function trimViews() {
+  for (const id of shownTabs()) {
+    const i = recent.indexOf(id);
+    if (i >= 0) recent.splice(i, 1);
+    recent.unshift(id);
+  }
+  for (let i = recent.length - 1; i >= 0; i--) if (!state.views.has(recent[i])) recent.splice(i, 1);
+  const keep = new Set([...shownTabs(), ...recent.slice(0, KEEP_TABS)]);
+  if (hist.open) keep.add(hist.id);
+  for (const [id, v] of [...state.views]) {
+    if (keep.has(id)) continue;
+    rememberSeen(id);
+    if (v.attached) send({ t: 'detach', id });
+    disposeView(id);
+  }
 }
 // Leaving the page also counts as having seen the tab on screen.
 document.addEventListener('visibilitychange', () => { if (document.hidden && state.active) rememberSeen(state.active); });
@@ -912,7 +949,7 @@ function activate(id) {
 
   let v = state.views.get(id);
   if (!v) v = createView(id);
-  if (!v.attached && send({ t: 'attach', id })) v.attached = true;
+  if (!v.attached) attachView(v);
   applyLayout();
   saveLayout();
   renderTabs();
@@ -981,7 +1018,8 @@ function onList(tabs, groups) {
   }
   // Tabs never viewed in this browser: take their current screen as the
   // starting point, so the yellow dot can tell a real change from a redraw.
-  for (const t of tabs) if (!seen.has(t.id)) fetchInBackground(t.id);
+  const unseen = tabs.filter((t) => !seen.has(t.id) && !state.views.has(t.id)).map((t) => t.id);
+  if (unseen.length) send({ t: 'peek', ids: unseen });
   // Clicking a sidebar button that then disappeared leaves focus nowhere.
   if (document.activeElement === document.body) focusActive();
 }
@@ -1786,14 +1824,14 @@ function applyLayout() {
     if (leaf) continue;
     if (v.el.classList.contains('visible')) {
       rememberSeen(id);
+      // Hidden, it keeps its renderer (xterm stops drawing it), so coming back is instant. trimViews frees the old ones.
       v.el.classList.remove('visible');
-      setWebgl(v, false);
     }
   }
   for (const [id, leaf] of wantLeaf) {
     let v = state.views.get(id);
     if (!v) v = createView(id);
-    if (!v.attached && send({ t: 'attach', id })) v.attached = true;
+    if (!v.attached) attachView(v);
     if (!v.el.classList.contains('visible')) {
       v.el.classList.add('visible');
       setWebgl(v, true);
@@ -1868,6 +1906,7 @@ function applyLayout() {
       ? `left:${a.x + a.w}px;top:${top + r.y}px;width:${GAP}px;height:${r.h}px`
       : `left:${r.x}px;top:${top + a.y + a.h}px;width:${r.w}px;height:${GAP}px`;
   });
+  trimViews();
 }
 
 function makeSplitter() {
@@ -2411,6 +2450,7 @@ function updateHistPill(id) {
   const v = state.views.get(id);
   const buf = v && v.term.buffer.active;
   if (buf && buf.type === 'normal' && buf.viewportY === 0 && buf.baseY > 0) {
+    if (v.more) { loadMoreHistory(v); return; } // the rest of the scrollback first, then the history on disk
     if (histEls.pill.hidden && histEls.pill.dataset.waiting !== '1') {
       histEls.pill.dataset.waiting = '1';
       send({ t: 'histInfo', id });

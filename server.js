@@ -412,13 +412,19 @@ function flushOutput(client, onlyId) {
 
 // Browsers attach to a tab when they first show it; until then they only get
 // activity notices for it. That keeps reconnects cheap with many tabs.
-function attach(client, tab) {
-  if (client.subs.has(tab.id)) return;
+// `lines`: history lines in the snapshot (the page asks for the newest ones first and for all of them when they are
+// scrolled to); `refresh` replaces a subscription the client already has.
+function attach(client, tab, { lines, refresh = false } = {}) {
+  if (client.subs.has(tab.id)) {
+    if (!refresh) return;
+    detach(client, tab.id);
+  }
   const id = tab.id;
   const handle = tab.subscribe({
-    onSnapshot: (d, size, seq) => {
+    lines,
+    onSnapshot: (d, size, seq, more) => {
       flushOutput(client, id);
-      send(client, { t: 'snap', id, d, seq, cols: size.cols, rows: size.rows });
+      send(client, { t: 'snap', id, d, seq, cols: size.cols, rows: size.rows, more });
     },
     onData: (d) => queueOutput(client, id, d),
     onSize: (size) => {
@@ -436,11 +442,21 @@ function attach(client, tab) {
       client.resyncs.set(id, r);
       const delay = r.n === 0 ? 0 : Math.min(30_000, 1000 * 2 ** (r.n - 1));
       setTimeout(() => {
-        if (clients.has(client) && !client.subs.has(id) && terminals.get(id)) attach(client, terminals.get(id));
+        if (clients.has(client) && !client.subs.has(id) && terminals.get(id)) attach(client, terminals.get(id), { lines });
       }, delay);
     },
   });
   client.subs.set(id, handle);
+}
+
+// The page stopped showing the tab and freed it; it hears about the tab through 'act' again.
+function detach(client, id) {
+  const handle = client.subs.get(id);
+  if (!handle) return;
+  flushOutput(client, id);
+  handle.close();
+  client.subs.delete(id);
+  client.out.delete(id);
 }
 
 function syncClient(client) {
@@ -455,8 +471,18 @@ function syncClient(client) {
 }
 
 terminals.on('changed', () => { for (const c of clients) syncClient(c); });
+// Output in a tab a page is not attached to: once it has had a moment to settle, the page gets the fingerprint of its
+// screen and compares it with what it last showed (the yellow dot), without loading the tab.
+const actTimers = new Map();
 terminals.on('activity', (id) => {
-  for (const c of clients) if (!c.subs.has(id)) send(c, { t: 'act', id });
+  if (actTimers.has(id)) return;
+  actTimers.set(id, setTimeout(() => {
+    actTimers.delete(id);
+    const tab = terminals.get(id);
+    if (!tab) return;
+    const h = tab.screenHash();
+    for (const c of clients) if (!c.subs.has(id)) send(c, { t: 'act', id, h });
+  }, 1200));
 });
 
 function onConnection(ws, session) {
@@ -508,7 +534,19 @@ function handleMessage(client, raw) {
       }
       break;
     case 'attach':
-      if (tab) attach(client, tab);
+      if (tab) attach(client, tab, { lines: num(msg.lines) || undefined, refresh: msg.refresh === true });
+      break;
+    case 'detach':
+      if (tab) detach(client, tab.id);
+      break;
+    case 'peek':
+      // Screen fingerprints of tabs the page has not loaded, as its starting point for the yellow dot.
+      if (Array.isArray(msg.ids)) {
+        for (const id of msg.ids.slice(0, 100)) {
+          const t = typeof id === 'string' && terminals.get(id);
+          if (t) send(client, { t: 'act', id, h: t.screenHash(), base: true });
+        }
+      }
       break;
     case 'ack': {
       const handle = tab && client.subs.get(tab.id);
