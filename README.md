@@ -378,4 +378,4 @@ data/                users.json, tabs.json, history/ (git-ignored)
 
 ## License
 
-[MIT](LICENSE). The bundled libraries (xterm.js, noVNC, marked, DOMPurify and the rest of `package.json`) have their own licenses.
+[MIT](LICENSE). The bundled libraries (xterm.js, noVNC, marked, DOMPurify and the rest of `package.json`) have their own licenses. The terminal font is [Nordwand Mono](https://github.com/tywr/Nordwand-Mono) by Tanguy Vivier, under the SIL Open Font License 1.1 (`public/static/fonts/NordwandMono-OFL.txt`).

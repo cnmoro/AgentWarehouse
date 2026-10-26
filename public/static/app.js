@@ -2706,6 +2706,11 @@ termsEl.addEventListener('pointerdown', () => reclaimSize(state.active));
 
 setConnected(false);
 $('#banner').hidden = true;
-connect();
+// The terminals measure their cells and build their glyph atlas from the font when they are made, so they wait for the
+// web font (a few hundred ms at most; after 3 s they start with whatever is there).
+Promise.race([
+  Promise.all(['', 'bold ', 'italic ', 'italic bold '].map((s) => document.fonts.load(`${s}16px "Nordwand Mono"`))),
+  new Promise((resolve) => { setTimeout(resolve, 3000); }),
+]).catch(() => {}).then(connect);
 
 document.addEventListener('visibilitychange', () => { if (document.hidden && state.ctrlSticky) setCtrlSticky(false); });
