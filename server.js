@@ -9,7 +9,7 @@ const { execFileSync } = require('child_process');
 const express = require('express');
 const { WebSocketServer } = require('ws');
 const { checkCredentials, loadUsers, SessionStore, LoginLimiter, DATA_DIR } = require('./lib/auth');
-const { TerminalManager, SCROLLBACK } = require('./lib/terminals');
+const { TerminalManager, SCROLLBACK, MAX_TABS } = require('./lib/terminals');
 const files = require('./lib/files');
 const ssh = require('./lib/ssh');
 const vnc = require('./lib/vnc');
@@ -74,7 +74,7 @@ if (Object.keys(loadUsers()).length === 0) {
   console.error('No users configured. Create one first:  npm run set-user');
   process.exit(EX_CONFIG);
 }
-for (const name of ['SESSION_TTL_HOURS', 'SESSION_IDLE_HOURS', 'SCROLLBACK', 'PORT']) {
+for (const name of ['SESSION_TTL_HOURS', 'SESSION_IDLE_HOURS', 'SCROLLBACK', 'PORT', 'MAX_TERMINALS']) {
   const v = process.env[name];
   if (v !== undefined && !(Number(v) > 0 && Number.isFinite(Number(v)))) {
     console.error(`${name} must be a positive number, got "${v}".`);
@@ -492,7 +492,7 @@ function onConnection(ws, session) {
   clients.add(client);
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
-  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, features: ['sessions', 'files', 'view', 'vnc', 'vnc-target', 'ssh', ...(vnc.isUp() ? ['vnc-local'] : []), ...(vstream.info().ok ? ['vnc-fluid:' + vstream.info().codecs.join('+') + (vstream.info().nvenc ? '+gpu' : '')] : [])] });
+  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, maxTabs: MAX_TABS, features: ['sessions', 'files', 'view', 'vnc', 'vnc-target', 'ssh', ...(vnc.isUp() ? ['vnc-local'] : []), ...(vstream.info().ok ? ['vnc-fluid:' + vstream.info().codecs.join('+') + (vstream.info().nvenc ? '+gpu' : '')] : [])] });
   syncClient(client);
 
   ws.on('message', (raw) => {
@@ -569,7 +569,7 @@ function handleMessage(client, raw) {
       }
       const created = terminals.create(str(msg.name), cwd, { group, explicitCwd: explicit });
       if (created) send(client, { t: 'created', id: created.id });
-      else send(client, { t: 'error', msg: 'Limit of 50 terminals reached. Close one first.' });
+      else send(client, { t: 'error', msg: `Limit of ${MAX_TABS} terminals reached. Close one first (or raise MAX_TERMINALS).` });
       break;
     }
     case 'rename':

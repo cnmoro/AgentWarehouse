@@ -10,7 +10,7 @@ const mobile = window.matchMedia('(max-width: 700px)');
 // On a Mac, Cmd does clipboard and Ctrl belongs to the terminal.
 const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
-const MAX_TABS = 50;
+let MAX_TABS = 200; // the server's limit, from its hello
 const INPUT_CHUNK = 256 * 1024;  // keep each message well under the server's frame limit
 const ACK_EVERY = 32 * 1024;
 const SNAPSHOT_SLICE = 256 * 1024;
@@ -155,6 +155,7 @@ function connect() {
         $('#who').textContent = msg.email;
         $('#who').title = msg.email;
         if (msg.scrollback > 0) state.scrollback = msg.scrollback;
+        if (msg.maxTabs > 0) MAX_TABS = msg.maxTabs;
         // Older servers have no file browser: its button stays hidden.
         if (typeof Files !== 'undefined') {
           Files.setFeatures(Array.isArray(msg.features) ? msg.features : []);

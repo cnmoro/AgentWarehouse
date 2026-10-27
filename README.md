@@ -353,7 +353,7 @@ npm run set-user -- --remove someone@example.com     # remove a user
 
 ## Configuration
 
-See `.env.example`: `PORT`, `HOST`, `ALLOWED_HOSTS`, `TRUST_PROXY`, `SESSION_TTL_HOURS`, `SESSION_IDLE_HOURS`, `SCROLLBACK`, `HISTORY_LINES`, `HISTORY_MB`, `VNC_PORT`, `VNC_HOST`, `VNC_PASSWORD_FILE`, `VNC_DISPLAY`, `DATA_DIR`.
+See `.env.example`: `PORT`, `HOST`, `ALLOWED_HOSTS`, `TRUST_PROXY`, `SESSION_TTL_HOURS`, `SESSION_IDLE_HOURS`, `SCROLLBACK`, `MAX_TERMINALS` (default 200), `HISTORY_LINES`, `HISTORY_MB`, `VNC_PORT`, `VNC_HOST`, `VNC_PASSWORD_FILE`, `VNC_DISPLAY`, `DATA_DIR`.
 
 ## Layout
 
