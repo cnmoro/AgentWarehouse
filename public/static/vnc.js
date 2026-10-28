@@ -35,6 +35,8 @@ const Vnc = (() => {
     mode: storage('wt.vncMode') || 'fluid',
     codec: storage('wt.vncCodec') || 'h264',
     fps: Number(storage('wt.vncFps')) || 60,
+    // Touch screens: 'pad' (the screen is a touchpad) or 'direct' (the pointer goes where the finger is).
+    touch: storage('wt.vncTouch') === 'direct' ? 'direct' : 'pad',
     mbps: Number(storage('wt.vncMbps')) || 12,
     quality: storage('wt.vncQuality') || 'balanced',
   };
@@ -84,6 +86,8 @@ const Vnc = (() => {
       <div class="vnc-body">
         <div class="vnc-screen"></div>
         <div class="vnc-msg" hidden></div>
+        <button class="vnc-zoom" type="button" title="Zoomed in (pinch to zoom). Tap to see the whole desktop again." hidden></button>
+        <button class="vnc-touch-btn" type="button" aria-pressed="false"></button>
         <textarea class="vnc-kbd" aria-label="Typing into the desktop" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="enter"></textarea>
         <button class="vnc-kbd-btn" type="button" title="Keyboard: show the on-screen keyboard and type into the desktop" aria-label="Keyboard" aria-pressed="false"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M18 13h.01M10 13h4M7 16h10"/></svg></button>
       </div>`;
@@ -92,7 +96,7 @@ const Vnc = (() => {
       root, status: q('.vnc-status'), dot: q('.vnc-dot'), auto: q('.vnc-auto'), preset: q('.vnc-preset'), fit: q('.vnc-fit'),
       fitLabel: q('.vnc-fitlabel'), screen: q('.vnc-screen'), msg: q('.vnc-msg'),
       host: q('.vnc-host'), port: q('.vnc-port'), target: q('.vnc-target'), body: q('.vnc-body'),
-      kbd: q('.vnc-kbd'), kbdBtn: q('.vnc-kbd-btn'),
+      kbd: q('.vnc-kbd'), kbdBtn: q('.vnc-kbd-btn'), zoom: q('.vnc-zoom'), touchBtn: q('.vnc-touch-btn'),
       modes: q('.vnc-modes'), mode: q('.vnc-mode'), fluidOpts: q('.vnc-fluidopts'), codec: q('.vnc-codec'), fps: q('.vnc-fps'), mbps: q('.vnc-mbps'), quality: q('.vnc-quality'), keys: q('.vnc-keys'),
     });
     el.mode.value = v.mode; el.fps.value = String(v.fps); el.mbps.value = String(v.mbps); el.quality.value = v.quality;
@@ -114,6 +118,7 @@ const Vnc = (() => {
     // Capture phase on the desktop's container: before noVNC's own handlers on its canvas.
     el.screen.addEventListener('keydown', onKeyDown, true);
     setupTouchKeyboard();
+    setupTouch();
     el.screen.addEventListener('keyup', onKeyUp, true);
     document.addEventListener('paste', onPaste, true);
     el.preset.innerHTML = '<option value="">Size…</option>'
@@ -182,13 +187,25 @@ const Vnc = (() => {
 
   // ---------------------------------------------------------------- connection
 
+  // noVNC's stand-in for a missing pointer is a 3-pixel dot, too small to follow on a phone: a white disc with a dark rim.
+  function bigDot() {
+    const n = 13, c = (n - 1) / 2, px = new Uint8Array(n * n * 4);
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      const d = Math.hypot(x - c, y - c), i = (y * n + x) * 4;
+      if (d > c + 0.5) continue;
+      const rim = d > c - 1.5;
+      px.set(rim ? [20, 20, 20, 255] : [255, 255, 255, 255], i);
+    }
+    return { rgbaPixels: px, w: n, h: n, hotx: c, hoty: c };
+  }
+
   async function connect() {
     if (v.rfb || v.loading) return;
     v.loading = true;
     setStatus('connecting…', 'busy');
     showMsg('Connecting to the desktop…');
     try {
-      if (!v.RFB) v.RFB = (await import('/vendor/novnc/core/rfb.js')).default;
+      if (!v.RFB) { v.RFB = (await import('/vendor/novnc/core/rfb.js')).default; v.RFB.cursors.dot = bigDot(); }
     } catch (err) {
       v.loading = false;
       setStatus('could not load the viewer', 'bad');
@@ -224,6 +241,8 @@ const Vnc = (() => {
     if (fluid) { patchTiny(); rfb._sock._wtTiny = true; }
     rfb.background = '#0b0d11';
     rfb.focusOnClick = true;
+    // A touch screen has no pointer of its own: when the desktop sends none (or an empty one), show a dot instead.
+    rfb.showDotCursor = matchMedia('(pointer: coarse)').matches;
     applySizing();
 
     rfb.addEventListener('connect', () => {
@@ -310,6 +329,7 @@ const Vnc = (() => {
   function disconnect() {
     stopPoll();
     stopStream();
+    g = null;
     if (v.rfb) {
       const r = v.rfb;
       v.rfb = null;
@@ -861,6 +881,217 @@ const Vnc = (() => {
     });
   }
 
+  // ---- Touch (phones, tablets). Two ways to use the desktop with a finger, switched with the button above the keyboard one.
+  // Touchpad (the default): the screen works like a laptop's touchpad. Dragging moves the pointer, a tap clicks, a tap
+  // with two fingers is a right click and with three a middle click, tap then drag (or hold, then drag) drags, and two
+  // fingers scroll. Direct: the pointer goes where the finger is. A tap clicks there, a drag drags, holding is a right
+  // click. In both, pinching zooms into the desktop here (the desktop itself does not change). Zoomed in, the view
+  // follows the pointer (touchpad) or moves with two fingers (direct).
+  // noVNC's own touch handling is bypassed: the zoom is a CSS transform it knows nothing about, so the position on the
+  // desktop is worked out here from where its canvas is on screen.
+  const BTN = { left: 1, middle: 2, right: 4, up: 8, down: 16, wleft: 32, wright: 64 };
+  const TAP_MS = 300, TAP_MOVE = 10, HOLD_MS = 450, SCROLL_STEP = 28, PINCH_START = 24, MAX_ZOOM = 6;
+  const zoom = { z: 1, x: 0, y: 0 };
+  const pad = { x: -1, y: -1 }; // the pointer, in desktop pixels (touchpad mode)
+  let g = null; // the gesture in progress, from the first finger down to the last one up
+  let lastTap = 0;
+  const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+  const live = () => { const r = v.rfb; return r && r._rfbConnectionState === 'connected' && !r.viewOnly && r._fbWidth ? r : null; };
+  function sendPointer(x, y, mask) {
+    const r = live();
+    if (r) v.RFB.messages.pointerEvent(r._sock, clamp(Math.round(x), 0, r._fbWidth - 1), clamp(Math.round(y), 0, r._fbHeight - 1), mask);
+  }
+  function click(p, btn) { sendPointer(p.x, p.y, 0); sendPointer(p.x, p.y, btn); sendPointer(p.x, p.y, 0); }
+  function wheel(p, btn) { sendPointer(p.x, p.y, btn); sendPointer(p.x, p.y, 0); }
+  function toDesktop(cx, cy) {
+    const r = v.rfb, b = r._canvas.getBoundingClientRect();
+    return { x: ((cx - b.left) / b.width) * r._fbWidth, y: ((cy - b.top) / b.height) * r._fbHeight };
+  }
+  function toClient(x, y) {
+    const r = v.rfb, b = r._canvas.getBoundingClientRect();
+    return { x: b.left + (x / r._fbWidth) * b.width, y: b.top + (y / r._fbHeight) * b.height };
+  }
+  // noVNC draws the desktop's pointer itself on touch screens; it only has to be told where.
+  function showPointer(p) {
+    const c = v.rfb && v.rfb._cursor;
+    if (!c || !c.move) return;
+    const at = toClient(p.x, p.y);
+    c.move(at.x - (c._hotSpot ? c._hotSpot.x : 0), at.y - (c._hotSpot ? c._hotSpot.y : 0));
+  }
+
+  function applyZoom() {
+    if (zoom.z <= 1) Object.assign(zoom, { z: 1, x: 0, y: 0 });
+    const w = el.body.clientWidth, h = el.body.clientHeight;
+    zoom.x = clamp(zoom.x, w * (1 - zoom.z), 0);
+    zoom.y = clamp(zoom.y, h * (1 - zoom.z), 0);
+    el.screen.style.transform = zoom.z === 1 ? '' : `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.z})`;
+    el.zoom.hidden = zoom.z === 1;
+    el.zoom.textContent = `${zoom.z.toFixed(1)}× ✕`;
+    if (v.stream) syncVideo(v.stream);
+    if (v.touch === 'pad' && pad.x >= 0 && live()) showPointer(pad);
+  }
+  function resetZoom() { zoom.z = 1; applyZoom(); }
+  // Zoomed in: keep the pointer on screen.
+  function follow() {
+    if (zoom.z === 1) return;
+    const b = el.body.getBoundingClientRect(), p = toClient(pad.x, pad.y), m = 40;
+    const dx = p.x < b.left + m ? b.left + m - p.x : p.x > b.right - m ? b.right - m - p.x : 0;
+    const dy = p.y < b.top + m ? b.top + m - p.y : p.y > b.bottom - m ? b.bottom - m - p.y : 0;
+    if (dx || dy) { zoom.x += dx; zoom.y += dy; applyZoom(); }
+  }
+  const two = (ts) => ({ mx: (ts[0].clientX + ts[1].clientX) / 2, my: (ts[0].clientY + ts[1].clientY) / 2, d: Math.hypot(ts[0].clientX - ts[1].clientX, ts[0].clientY - ts[1].clientY) || 1 });
+  const byId = (list, id) => [...list].find((t) => t.identifier === id);
+
+  function touchStart(e) {
+    const r = live();
+    if (!r) return;
+    const ts = [...e.touches];
+    if (!g) {
+      if (pad.x < 0 || pad.x >= r._fbWidth || pad.y >= r._fbHeight) Object.assign(pad, { x: r._fbWidth / 2, y: r._fbHeight / 2 });
+      const t = e.changedTouches[0];
+      g = { t0: performance.now(), max: 0, mode: '', far: 0, start: new Map(), id: t.identifier, btn: 0, hold: 0,
+        afterTap: v.touch === 'pad' && performance.now() - lastTap < 350, last: { x: t.clientX, y: t.clientY, t: e.timeStamp } };
+      if (v.touch === 'direct') { g.at = toDesktop(t.clientX, t.clientY); sendPointer(g.at.x, g.at.y, 0); showPointer(g.at); }
+      else showPointer(pad);
+      g.hold = setTimeout(onHold, HOLD_MS);
+    }
+    for (const t of e.changedTouches) g.start.set(t.identifier, { x: t.clientX, y: t.clientY });
+    g.max = Math.max(g.max, ts.length);
+    if (ts.length > 1) clearTimeout(g.hold);
+    if (ts.length === 2 && !g.mode) { g.two = two(ts); g.mid = { x: g.two.mx, y: g.two.my }; g.acc = { x: 0, y: 0 }; g.from = { ...zoom }; }
+  }
+
+  function onHold() {
+    if (!g || g.mode || g.max !== 1 || g.far >= TAP_MOVE) return;
+    navigator.vibrate?.(15);
+    if (v.touch === 'pad') { g.mode = 'drag'; g.btn = BTN.left; sendPointer(pad.x, pad.y, g.btn); } // hold, then drag
+    else { g.mode = 'held'; click(g.at, BTN.right); }
+  }
+
+  function touchMove(e) {
+    const r = live();
+    if (!g || !r) return;
+    const ts = [...e.touches];
+    for (const t of ts) {
+      const s = g.start.get(t.identifier);
+      if (s) g.far = Math.max(g.far, Math.hypot(t.clientX - s.x, t.clientY - s.y));
+    }
+    if (g.max === 1 || g.mode === 'move' || g.mode === 'drag') {
+      const t = byId(ts, g.id);
+      if (!t || g.mode === 'held') return;
+      if (!g.mode) {
+        if (g.far < (v.touch === 'pad' ? 6 : TAP_MOVE)) return;
+        clearTimeout(g.hold);
+        if (v.touch === 'pad' && !g.afterTap) g.mode = 'move';
+        else { g.mode = 'drag'; g.btn = BTN.left; const p = v.touch === 'pad' ? pad : g.at; sendPointer(p.x, p.y, g.btn); }
+      }
+      if (v.touch === 'pad') {
+        // Like a touchpad: the pointer moves as far as the finger on screen, further when the finger is fast.
+        const dx = t.clientX - g.last.x, dy = t.clientY - g.last.y, dt = Math.max(1, e.timeStamp - g.last.t);
+        const gain = Math.min(3, 1 + Math.max(0, Math.hypot(dx, dy) / dt - 0.4) * 1.5);
+        const b = r._canvas.getBoundingClientRect();
+        pad.x = clamp(pad.x + (dx * r._fbWidth * gain) / b.width, 0, r._fbWidth - 1);
+        pad.y = clamp(pad.y + (dy * r._fbHeight * gain) / b.height, 0, r._fbHeight - 1);
+        sendPointer(pad.x, pad.y, g.btn);
+        showPointer(pad);
+        follow();
+      } else {
+        const p = toDesktop(t.clientX, t.clientY);
+        sendPointer(p.x, p.y, g.btn);
+        showPointer(p);
+      }
+      g.last = { x: t.clientX, y: t.clientY, t: e.timeStamp };
+    } else if (g.max === 2 && ts.length === 2 && g.two) {
+      const now = two(ts), s = g.two;
+      if (!g.mode) {
+        const moved = Math.hypot(now.mx - s.mx, now.my - s.my);
+        // Two fingers apart or together zoom; side by side they scroll (or, zoomed in with direct touch, move the view).
+        if (Math.abs(now.d - s.d) > PINCH_START || (v.touch === 'direct' && zoom.z > 1 && moved > TAP_MOVE)) g.mode = 'pinch';
+        else if (moved > TAP_MOVE) g.mode = 'scroll';
+        else return;
+      }
+      if (g.mode === 'pinch') {
+        const b = el.body.getBoundingClientRect(), f = g.from;
+        const z = clamp((f.z * now.d) / s.d, 1, MAX_ZOOM);
+        // The point of the desktop that was between the fingers stays between them.
+        const px = (s.mx - b.left - f.x) / f.z, py = (s.my - b.top - f.y) / f.z;
+        Object.assign(zoom, { z, x: now.mx - b.left - px * z, y: now.my - b.top - py * z });
+        applyZoom();
+      } else {
+        g.acc.x += now.mx - g.mid.x;
+        g.acc.y += now.my - g.mid.y;
+        g.mid = { x: now.mx, y: now.my };
+        const at = v.touch === 'pad' ? pad : toDesktop(now.mx, now.my);
+        // Content follows the fingers, as on a phone: fingers up scroll down.
+        for (; g.acc.y >= SCROLL_STEP; g.acc.y -= SCROLL_STEP) wheel(at, BTN.up);
+        for (; g.acc.y <= -SCROLL_STEP; g.acc.y += SCROLL_STEP) wheel(at, BTN.down);
+        for (; g.acc.x >= SCROLL_STEP; g.acc.x -= SCROLL_STEP) wheel(at, BTN.wleft);
+        for (; g.acc.x <= -SCROLL_STEP; g.acc.x += SCROLL_STEP) wheel(at, BTN.wright);
+      }
+    }
+  }
+
+  function touchEnd(e) {
+    if (!g) return;
+    const p = v.touch === 'pad' ? pad : g.at;
+    // The finger that holds a button down came off: let go of it, even if others are still down.
+    if (g.btn && !byId(e.touches, g.id)) {
+      const t = byId(e.changedTouches, g.id);
+      const at = v.touch === 'pad' || !t ? p : toDesktop(t.clientX, t.clientY);
+      if (live()) sendPointer(at.x, at.y, 0);
+      g.btn = 0;
+    }
+    if (e.touches.length) return;
+    clearTimeout(g.hold);
+    if (e.type === 'touchend' && live() && !g.mode && g.far < TAP_MOVE && performance.now() - g.t0 < TAP_MS) {
+      const btn = g.max === 1 ? BTN.left : g.max === 2 ? BTN.right : BTN.middle;
+      click(p, btn);
+      if (g.max === 1) lastTap = performance.now();
+    }
+    g = null;
+  }
+
+  function setTouchMode(mode) {
+    v.touch = mode;
+    const isPad = mode === 'pad';
+    el.touchBtn.classList.toggle('on', isPad);
+    el.touchBtn.setAttribute('aria-pressed', String(isPad));
+    el.touchBtn.title = isPad
+      ? 'Touchpad mode (tap to switch to direct touch): drag to move the pointer, tap to click, two-finger tap for a right click, three-finger tap for a middle click, tap then drag to drag, two fingers to scroll, pinch to zoom'
+      : 'Direct touch (tap to switch to touchpad mode): tap where you want to click, drag to drag, hold for a right click, two fingers to scroll, pinch to zoom';
+    el.touchBtn.setAttribute('aria-label', isPad ? 'Touchpad mode' : 'Direct touch');
+    el.touchBtn.innerHTML = isPad
+      ? '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 15h18M12 15v5"/></svg>'
+      : '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5"/></svg>';
+  }
+
+  function setupTouch() {
+    setTouchMode(v.touch);
+    // Capture phase on the panel: before noVNC's handlers on its canvas, which then never see the touches.
+    const opts = { capture: true, passive: false };
+    const on = (type, fn) => el.body.addEventListener(type, (e) => {
+      if (!el.screen.contains(e.target)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      fn(e);
+    }, opts);
+    on('touchstart', touchStart);
+    on('touchmove', touchMove);
+    on('touchend', touchEnd);
+    on('touchcancel', touchEnd);
+    el.touchBtn.addEventListener('pointerdown', (e) => e.preventDefault()); // the on-screen keyboard stays up
+    el.touchBtn.addEventListener('click', () => {
+      setTouchMode(v.touch === 'pad' ? 'direct' : 'pad');
+      storage('wt.vncTouch', v.touch);
+      toast(v.touch === 'pad'
+        ? 'Touchpad: drag moves the pointer, tap clicks, 2-finger tap right-clicks, 3-finger tap middle-clicks, tap then drag drags, 2 fingers scroll, pinch zooms'
+        : 'Direct touch: tap clicks where you touch, drag drags, hold right-clicks, 2 fingers scroll, pinch zooms', 4000);
+    });
+    el.zoom.addEventListener('pointerdown', (e) => e.preventDefault());
+    el.zoom.addEventListener('click', resetZoom);
+    new ResizeObserver(() => { if (zoom.z !== 1) applyZoom(); }).observe(el.body);
+  }
+
   // Shortcuts the browser keeps for itself, to send by hand: [label, modifiers, keysym, code].
   function shortcuts() { return [
     ['Ctrl+T (new tab)', 'c', 0x74, 'KeyT'], ['Ctrl+Shift+T (reopen tab)', 'cs', 0x54, 'KeyT'],
@@ -963,6 +1194,7 @@ const Vnc = (() => {
     v.open = false;
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     disconnect();
+    resetZoom();
     el.root.hidden = true;
     $('#app').classList.remove('vnc-open');
     markTool('.vnc-btn', false);

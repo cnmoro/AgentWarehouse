@@ -271,6 +271,11 @@ If this machine runs a VNC server (found automatically: the user's own `Xvnc`, o
 - **Resize desktop with window:** while the switch is on, the desktop's resolution follows the size of the panel (resize the window, drag the sidebar). It is off by default, because it changes the real desktop for everyone looking at it.
 - **Size:** the menu sets the desktop to a standard resolution (1024×768 up to 3840×2160, or a custom one) and turns the switch off; the desktop is then shown scaled to fit (**Scale to fit**) or at its own size with scrollbars. The last choice is remembered.
 - **Ctrl+Alt+Del**, **Paste** (sends your clipboard's text to the desktop's clipboard; what the desktop copies arrives on yours), full screen, and Reconnect. Closing the panel disconnects.
+- **On a phone or tablet**, two round buttons sit at the bottom right. The keyboard one brings up the on-screen keyboard and types into the desktop. The one above it switches between two ways of using the desktop with a finger (remembered):
+  - **Touchpad** (the default): the screen works like a laptop's touchpad. Drag to move the pointer, tap to click, tap with two fingers for a right click and with three for a middle click, tap and then drag (or hold, then drag) to drag, and slide two fingers to scroll.
+  - **Direct touch:** the pointer goes where the finger is. Tap to click there, drag to drag, hold for a right click, two fingers to scroll.
+
+  In both, **pinch to zoom** into the desktop (up to 6×; only this view changes, not the desktop). Zoomed in, the view follows the pointer in touchpad mode, and moves with two fingers in direct touch. A label at the top left shows the zoom; tap it to see the whole desktop again.
 
 Resizing needs a VNC server that supports it (TigerVNC's `Xvnc` does).
 

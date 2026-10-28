@@ -673,8 +673,9 @@ body.resizing #main { pointer-events: none; }
 }
 .vnc-preset:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .vnc-fitlabel.off { opacity: .45; }
-.vnc-body { position: relative; flex: 1; min-height: 0; background: #0b0d11; }
-.vnc-screen { position: absolute; inset: 0; }
+.vnc-body { position: relative; flex: 1; min-height: 0; background: #0b0d11; overflow: hidden; }
+/* Pinch zoom (vnc.js) scales this from its top left corner; the page itself must not zoom or scroll under the fingers. */
+.vnc-screen { position: absolute; inset: 0; transform-origin: 0 0; touch-action: none; }
 .vnc-msg {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 3; text-align: center;
   padding: 18px 24px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); box-shadow: 0 10px 30px rgba(0,0,0,.5);
@@ -1049,11 +1050,19 @@ body.resizing #main { pointer-events: none; }
   position: absolute; left: 0; top: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0;
   font-size: 16px; resize: none; overflow: hidden; caret-color: transparent; pointer-events: none;
 }
-.vnc-kbd-btn {
+.vnc-kbd-btn, .vnc-touch-btn {
   position: absolute; right: 16px; bottom: 16px; z-index: 6; width: 48px; height: 48px; border-radius: 50%;
   display: none; place-items: center; padding: 0; color: var(--text); background: var(--panel-2);
   border: 1px solid var(--line); box-shadow: 0 2px 10px rgba(0,0,0,.4); opacity: .7; touch-action: manipulation;
 }
 .vnc-kbd-btn.on { opacity: 1; color: #fff; background: #1d6fcf; border-color: var(--accent); }
+.vnc-touch-btn { bottom: 76px; }
+.vnc-touch-btn.on { opacity: .9; color: var(--accent); }
+/* How far the desktop is zoomed in; a tap shows all of it again. */
+.vnc-zoom {
+  position: absolute; left: 12px; top: 12px; z-index: 6; height: 30px; padding: 0 12px; border-radius: 15px;
+  font: 600 12.5px var(--sans); color: var(--text); background: var(--panel-2); border: 1px solid var(--line);
+  box-shadow: 0 2px 10px rgba(0,0,0,.4); opacity: .85; touch-action: manipulation;
+}
 /* Shown where there is a touch screen (phones, tablets); a physical keyboard types into the desktop directly. */
-@media (pointer: coarse), (max-width: 700px) { .vnc-kbd-btn { display: grid; } }
+@media (pointer: coarse), (max-width: 700px) { .vnc-kbd-btn, .vnc-touch-btn { display: grid; } }
