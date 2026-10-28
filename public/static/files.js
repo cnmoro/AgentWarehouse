@@ -464,6 +464,8 @@ const Files = (() => {
           <button class="icon-btn" data-act="back" title="Back (Alt+←)" aria-label="Back">←</button>
           <button class="icon-btn" data-act="forward" title="Forward (Alt+→)" aria-label="Forward">→</button>
           <button class="icon-btn" data-act="up" title="Parent folder (Backspace)" aria-label="Parent folder">↑</button>
+          <button class="icon-btn files-narrow-only" data-act="cwd" title="The folder the terminal on screen is in" aria-label="Terminal folder">›_</button>
+          <button class="icon-btn files-narrow-only" data-act="home" title="Home" aria-label="Home">⌂</button>
         </div>
         <div class="files-path" title="Click to type a path (Ctrl+L)"></div>
         <div class="files-head-actions">
@@ -780,9 +782,7 @@ const Files = (() => {
     el.places.append(placeItem('Home', home, { icon: '⌂' }));
     if (state.active) {
       const t = placeItem('Terminal folder', '', { icon: '›_', title: 'The folder the terminal on screen is in' });
-      t.onclick = async () => {
-        try { const { path } = await api('GET', `/cwd?tab=${enc(state.active)}`); go(path); } catch (err) { toast(err.message); }
-      };
+      t.onclick = goTerminalFolder;
       el.places.append(t);
     }
     el.places.append(placeItem('Computer', '/', { icon: '⌸' }));
@@ -2461,8 +2461,15 @@ const Files = (() => {
     ];
   }
 
+  async function goTerminalFolder() {
+    if (!state.active) { toast('No terminal is open.'); return; }
+    try { const { path } = await api('GET', `/cwd?tab=${enc(state.active)}`); go(path); } catch (err) { toast(err.message); }
+  }
+
   function runAction(act) {
     if (act === 'back') back();
+    else if (act === 'cwd') goTerminalFolder();
+    else if (act === 'home') go(fb.info ? fb.info.home : '~');
     else if (act === 'forward') forward();
     else if (act === 'up') up();
     else if (act === 'refresh') refresh();

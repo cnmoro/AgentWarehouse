@@ -84,12 +84,15 @@ const Vnc = (() => {
       <div class="vnc-body">
         <div class="vnc-screen"></div>
         <div class="vnc-msg" hidden></div>
+        <textarea class="vnc-kbd" aria-label="Typing into the desktop" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="enter"></textarea>
+        <button class="vnc-kbd-btn" type="button" title="Keyboard: show the on-screen keyboard and type into the desktop" aria-label="Keyboard" aria-pressed="false"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M18 13h.01M10 13h4M7 16h10"/></svg></button>
       </div>`;
     const q = (s) => root.querySelector(s);
     Object.assign(el, {
       root, status: q('.vnc-status'), dot: q('.vnc-dot'), auto: q('.vnc-auto'), preset: q('.vnc-preset'), fit: q('.vnc-fit'),
       fitLabel: q('.vnc-fitlabel'), screen: q('.vnc-screen'), msg: q('.vnc-msg'),
       host: q('.vnc-host'), port: q('.vnc-port'), target: q('.vnc-target'), body: q('.vnc-body'),
+      kbd: q('.vnc-kbd'), kbdBtn: q('.vnc-kbd-btn'),
       modes: q('.vnc-modes'), mode: q('.vnc-mode'), fluidOpts: q('.vnc-fluidopts'), codec: q('.vnc-codec'), fps: q('.vnc-fps'), mbps: q('.vnc-mbps'), quality: q('.vnc-quality'), keys: q('.vnc-keys'),
     });
     el.mode.value = v.mode; el.fps.value = String(v.fps); el.mbps.value = String(v.mbps); el.quality.value = v.quality;
@@ -110,6 +113,7 @@ const Vnc = (() => {
     el.target.addEventListener('submit', (e) => { e.preventDefault(); disconnect(); connect(); });
     // Capture phase on the desktop's container: before noVNC's own handlers on its canvas.
     el.screen.addEventListener('keydown', onKeyDown, true);
+    setupTouchKeyboard();
     el.screen.addEventListener('keyup', onKeyUp, true);
     document.addEventListener('paste', onPaste, true);
     el.preset.innerHTML = '<option value="">Size…</option>'
@@ -800,6 +804,62 @@ const Vnc = (() => {
     pasteBox.focus({ preventScroll: true });
   }
   function refocusDesktop() { el.screen.querySelector('canvas')?.focus({ preventScroll: true }); }
+
+  // ---- On-screen keyboard (phones, tablets). Tapping the desktop never brings the keyboard up: what has focus there is
+  // a canvas. The keyboard button focuses a hidden text box instead and whatever is typed into it is sent as keys.
+  // Phone keyboards rarely send real key events (they compose words and autocorrect), so the box is compared with what
+  // it held before: removed characters become BackSpace, added ones are typed. It starts with a few filler characters
+  // so that BackSpace still has something to delete.
+  const KBD_FILL = '\u00a0'.repeat(8);
+  const KBD_KEYS = {
+    ArrowLeft: [0xff51, 'ArrowLeft'], ArrowUp: [0xff52, 'ArrowUp'], ArrowRight: [0xff53, 'ArrowRight'], ArrowDown: [0xff54, 'ArrowDown'],
+    Tab: [0xff09, 'Tab'], Escape: [0xff1b, 'Escape'], Delete: [0xffff, 'Delete'], Home: [0xff50, 'Home'], End: [0xff57, 'End'],
+    PageUp: [0xff55, 'PageUp'], PageDown: [0xff56, 'PageDown'],
+  };
+  let kbdPrev = KBD_FILL;
+  let kbdComposing = false;
+  const keysymOf = (ch) => {
+    if (ch === '\n') return 0xff0d;
+    const cp = ch.codePointAt(0);
+    if (ch === KBD_FILL[0]) return 0x20; // a filler that was typed over or around counts as a space
+    return cp < 0x100 ? cp : 0x01000000 | cp;
+  };
+  function kbdReset() { el.kbd.value = KBD_FILL; kbdPrev = KBD_FILL; el.kbd.setSelectionRange(KBD_FILL.length, KBD_FILL.length); }
+  function kbdSync() {
+    const now = el.kbd.value;
+    const r = v.rfb;
+    if (now === kbdPrev) return;
+    let i = 0;
+    while (i < now.length && i < kbdPrev.length && now[i] === kbdPrev[i]) i++;
+    const removed = [...kbdPrev.slice(i)].length;
+    const added = [...now.slice(i)];
+    kbdPrev = now;
+    if (r) {
+      for (let k = 0; k < removed; k++) r.sendKey(0xff08, 'Backspace');
+      for (const ch of added) r.sendKey(keysymOf(ch), ch === '\n' ? 'Enter' : null);
+    }
+    // Keep the box short and give BackSpace its filler back, between words (never in the middle of a composition).
+    if (!kbdComposing && (now.length < KBD_FILL.length / 2 || now.length > 200 || now.endsWith('\n'))) kbdReset();
+  }
+  function setupTouchKeyboard() {
+    kbdReset();
+    el.kbd.addEventListener('input', kbdSync);
+    el.kbd.addEventListener('compositionstart', () => { kbdComposing = true; });
+    el.kbd.addEventListener('compositionend', () => { kbdComposing = false; kbdSync(); });
+    el.kbd.addEventListener('keydown', (e) => {
+      const k = KBD_KEYS[e.key];
+      if (!k || e.isComposing || !v.rfb) return;
+      e.preventDefault();
+      v.rfb.sendKey(k[0], k[1]);
+    });
+    el.kbd.addEventListener('focus', () => { el.kbdBtn.classList.add('on'); el.kbdBtn.setAttribute('aria-pressed', 'true'); kbdReset(); });
+    el.kbd.addEventListener('blur', () => { el.kbdBtn.classList.remove('on'); el.kbdBtn.setAttribute('aria-pressed', 'false'); kbdComposing = false; });
+    // Keep the focus where it is while the button is pressed, so the click can tell whether the keyboard was up.
+    el.kbdBtn.addEventListener('pointerdown', (e) => e.preventDefault());
+    el.kbdBtn.addEventListener('click', () => {
+      if (document.activeElement === el.kbd) { el.kbd.blur(); refocusDesktop(); } else el.kbd.focus({ preventScroll: true });
+    });
+  }
 
   // Shortcuts the browser keeps for itself, to send by hand: [label, modifiers, keysym, code].
   function shortcuts() { return [
