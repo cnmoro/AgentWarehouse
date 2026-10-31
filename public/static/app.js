@@ -48,6 +48,7 @@ const state = {
   fontSize: Number(storage('wt.fontSize')) || 14,
   scrollback: 10000,    // replaced by the server's value on connect
   ctrlSticky: false,    // phone key bar: next key is sent with Ctrl
+  layouts: null,        // [{ id, name, tree }] saved layouts; null: a server that keeps none
 };
 
 const THEME = {
@@ -176,6 +177,7 @@ function connect() {
       case 'act': onAct(msg); break;
       case 'created': activate(msg.id); break;
       case 'error': toast(msg.msg); break;
+      case 'layouts': state.layouts = Array.isArray(msg.list) ? msg.list : []; renderLayouts(); break;
       case 'pong': break;
       case 'histInfo': onHistInfo(msg); break;
       case 'histLines': onHistLines(msg); break;
@@ -1732,6 +1734,7 @@ function plain(n) {
 function saveLayout() {
   const p = plain(layout.root);
   storage('wt.layout', p && !p.t ? JSON.stringify({ tree: p, focus: state.active }) : '');
+  renderLayouts();
 }
 function inflate(p) {
   if (!p) return null;
@@ -2138,6 +2141,180 @@ termsEl.addEventListener('focusin', (e) => {
   if (id && id !== state.active && isShown(id)) activate(id);
 });
 mobile.addEventListener('change', () => { barKey = null; applyLayout(); fitActive(); });
+
+// ------------------------------------------------------------------ saved layouts
+//
+// The panes on screen (which terminals, Files, the Desktop, and how the area is
+// split) can be saved under a name. The list is kept on the server, so every
+// browser signed in sees it, and shows in the sidebar above the sessions; a
+// click puts the panes back. A terminal that was closed since is replaced by
+// another tab of its session, or left out when the whole session is gone.
+
+const layoutsEl = $('#layouts');
+const layoutsList = layoutsEl.querySelector('.layouts-list');
+const layoutsToggle = layoutsEl.querySelector('.layouts-toggle');
+let layoutsOpen = storage('wt.layoutsOpen') !== '0';
+
+// The panes on screen, in the form the server keeps.
+function layoutTree(n = layout.root) {
+  if (n.type === 'leaf') {
+    if (n.kind === 'tab') return n.tabId ? { k: 'tab', t: n.tabId, g: sessionOf(n.tabId) || '' } : null;
+    if (n.kind === 'files') return { k: 'files', p: Files.path() };
+    return { k: 'vnc' };
+  }
+  const a = layoutTree(n.a), b = layoutTree(n.b);
+  if (a && b) return { d: n.dir, f: Math.round(n.frac * 1000) / 1000, a, b };
+  return a || b;
+}
+// What two arrangements must share to be "the same layout": the panes and the splits, not their sizes.
+const layoutSig = (t) => (!t ? '' : t.k === 'tab' ? `t:${t.t}` : t.k ? t.k : `${t.d}(${layoutSig(t.a)},${layoutSig(t.b)})`);
+const leafList = (t) => (t.k ? [t] : [...leafList(t.a), ...leafList(t.b)]);
+const panelAvailable = (kind) => [...document.querySelectorAll(kind === 'files' ? '.files-btn' : '.vnc-btn')].some((b) => !b.hidden);
+
+function defaultLayoutName(tree) {
+  const names = leafList(tree).map((l) => (l.k === 'files' ? 'Files' : l.k === 'vnc' ? 'Desktop' : sessionLabel(l.t))).filter(Boolean);
+  return [...new Set(names)].join(' + ').slice(0, 80) || 'Layout';
+}
+
+function saveCurrentLayout(existing) {
+  const tree = layoutTree();
+  if (!tree) return;
+  if (existing) {
+    send({ t: 'layoutSave', id: existing.id, tree });
+    toast(`Layout "${existing.name}" now has the panes on screen`, 2200);
+    return;
+  }
+  const name = (window.prompt('Name of this layout:', defaultLayoutName(tree)) || '').trim();
+  if (!name) return;
+  if (!layoutsOpen) { layoutsOpen = true; storage('wt.layoutsOpen', '1'); }
+  send({ t: 'layoutSave', id: `l${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, name, tree });
+}
+
+function renameLayout(item) {
+  const name = (window.prompt('New name of the layout:', item.name) || '').trim();
+  if (name && name !== item.name) send({ t: 'layoutRename', id: item.id, name });
+}
+
+function deleteLayout(item) {
+  if (confirm(`Delete the layout "${item.name}"? Its terminals stay open.`)) send({ t: 'layoutDelete', id: item.id });
+}
+
+// Puts the saved panes on screen.
+function openLayout(item) {
+  const used = new Set();
+  let panel = null, path = '';
+  const build = (p) => {
+    if (p.k === 'tab') {
+      let id = !used.has(p.t) && state.tabs.some((t) => t.id === p.t) ? p.t : null;
+      if (!id && p.g) { const other = tabsOf(p.g).find((t) => !used.has(t.id)); id = other ? other.id : null; } // closed: another tab of the session
+      if (!id) return null;
+      used.add(id);
+      return newLeaf('tab', id);
+    }
+    // One panel at a time (Files and the Desktop never share the screen), and only one this server offers.
+    if (panel || !panelAvailable(p.k)) return null;
+    panel = p.k;
+    path = p.p || '';
+    return newLeaf(p.k);
+  };
+  const inflateSaved = (p) => {
+    if (p.k) return build(p);
+    const a = inflateSaved(p.a), b = inflateSaved(p.b);
+    if (!a || !b) return a || b;
+    return { type: 'node', dir: p.d === 'v' ? 'v' : 'h', frac: Math.max(MIN_FRAC, Math.min(1 - MIN_FRAC, Number(p.f) || 0.5)), a, b };
+  };
+  const root = inflateSaved(item.tree);
+  if (!root || !leavesOf(root).some((l) => l.kind === 'tab')) {
+    toast(`The terminals of "${item.name}" are no longer open.`);
+    return;
+  }
+  for (const kind of ['files', 'vnc']) if (kind !== panel) closePanel(kind);
+  layout.root = root;
+  const tabs = leavesOf(root).filter((l) => l.kind === 'tab');
+  layout.focus = tabs.find((l) => l.tabId === state.active) || tabs[0];
+  const id = layout.focus.tabId;
+  if (state.active && state.active !== id && state.views.has(state.active)) rememberSeen(state.active);
+  state.active = id;
+  storage('wt.active', id);
+  state.activity.delete(id);
+  rememberLastTab(id);
+  if (panel) {
+    const api = panelApi(panel);
+    if (panel === 'files') api.open(path || undefined);
+    else if (!api.isOpen()) api.open();
+  }
+  barKey = null;
+  hideHistPill();
+  if (hist.open) histClose();
+  relayout({ focus: !panel });
+  if (mobile.matches) setSidebar(false);
+}
+
+// A small picture of the layout: its panes as boxes, Files and the Desktop filled in.
+function layoutIcon(tree) {
+  const W = 22, H = 15, parts = [];
+  (function draw(t, x, y, w, h) {
+    if (t.k) {
+      const cls = t.k === 'tab' ? 'li-tab' : `li-${t.k}`;
+      parts.push(`<rect class="${cls}" x="${x + 0.5}" y="${y + 0.5}" width="${Math.max(1, w - 1)}" height="${Math.max(1, h - 1)}" rx="1"/>`);
+      return;
+    }
+    const f = Math.max(0.15, Math.min(0.85, t.f || 0.5));
+    if (t.d === 'h') { const w1 = Math.round(w * f); draw(t.a, x, y, w1, h); draw(t.b, x + w1, y, w - w1, h); }
+    else { const h1 = Math.round(h * f); draw(t.a, x, y, w, h1); draw(t.b, x, y + h1, w, h - h1); }
+  })(tree, 0, 0, W, H);
+  return `<svg class="layout-icon" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" aria-hidden="true">${parts.join('')}</svg>`;
+}
+
+function renderLayouts() {
+  if (!state.layouts) return;
+  const now = layoutTree();
+  const split = leavesOf().length > 1;
+  // Shown once there is something to show: a saved layout, or panes on screen worth saving.
+  layoutsEl.hidden = !state.layouts.length && !split;
+  if (layoutsEl.hidden) { layoutsList.textContent = ''; return; }
+  const saveBtn = layoutsEl.querySelector('.layouts-save');
+  saveBtn.disabled = !now;
+  layoutsToggle.setAttribute('aria-expanded', String(layoutsOpen));
+  layoutsToggle.querySelector('.chev').textContent = layoutsOpen ? '▾' : '▸';
+  layoutsToggle.querySelector('span:last-child').textContent = state.layouts.length ? `Layouts (${state.layouts.length})` : 'Layouts';
+  layoutsList.hidden = !layoutsOpen;
+  layoutsList.textContent = '';
+  if (!layoutsOpen) return;
+  const sig = layoutSig(now);
+  for (const item of state.layouts) {
+    const li = document.createElement('li');
+    li.className = 'tab layout-item';
+    if (split && layoutSig(item.tree) === sig) li.classList.add('active');
+    li.tabIndex = 0;
+    li.title = `${item.name}\nClick to put these panes on screen · double-click to rename`;
+    li.innerHTML = layoutIcon(item.tree);
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = item.name;
+    li.append(name);
+    const actions = document.createElement('span');
+    actions.className = 'actions';
+    actions.append(
+      actionButton('⤓', 'Replace with the panes on screen', `Update ${item.name}`, () => saveCurrentLayout(item)),
+      actionButton('✎', 'Rename', `Rename ${item.name}`, () => renameLayout(item)),
+      actionButton('✕', 'Delete this layout (the terminals stay open)', `Delete ${item.name}`, () => deleteLayout(item), 'close'),
+    );
+    li.append(actions);
+    li.onclick = () => openLayout(item);
+    li.onkeydown = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); openLayout(item); }
+      else if (e.key === 'F2') { e.preventDefault(); renameLayout(item); }
+      else if (e.key === 'Delete') { e.preventDefault(); deleteLayout(item); }
+    };
+    name.ondblclick = (e) => { e.stopPropagation(); renameLayout(item); };
+    layoutsList.append(li);
+  }
+}
+
+layoutsToggle.addEventListener('click', () => { layoutsOpen = !layoutsOpen; storage('wt.layoutsOpen', layoutsOpen ? '1' : '0'); renderLayouts(); });
+layoutsEl.querySelector('.layouts-save').addEventListener('click', () => saveCurrentLayout());
+
 
 // ------------------------------------------------------------------ long-term history
 //

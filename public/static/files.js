@@ -2786,5 +2786,5 @@ const Files = (() => {
 
   for (const b of document.querySelectorAll('.files-btn')) b.addEventListener('click', toggle);
 
-  return { open, close, toggle, setAvailable, setFeatures, isOpen: () => fb.open };
+  return { open, close, toggle, setAvailable, setFeatures, isOpen: () => fb.open, path: () => (fb.open && fb.path) || '' };
 })();

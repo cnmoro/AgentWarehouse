@@ -16,6 +16,7 @@ const vnc = require('./lib/vnc');
 const vstream = require('./lib/stream');
 const stt = require('./lib/stt');
 const tls = require('./lib/tls');
+const { Layouts } = require('./lib/layouts');
 
 // Configuration errors exit with 78 (EX_CONFIG); the systemd unit does not
 // restart on that code, since retrying cannot help.
@@ -312,6 +313,8 @@ const makeServer = () => (USE_HTTPS ? https.createServer({ key: tlsOptions.key, 
 const server = makeServer();
 const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 });
 const clients = new Set();
+const layouts = new Layouts(DATA_DIR);
+const sendLayouts = () => { for (const c of clients) send(c, { t: 'layouts', list: layouts.list() }); };
 
 // The desktop: noVNC's WebSocket, relayed to the VNC server (lib/vnc.js).
 const vncWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
@@ -492,8 +495,9 @@ function onConnection(ws, session) {
   clients.add(client);
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
-  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, maxTabs: MAX_TABS, features: ['sessions', 'files', 'view', 'vnc', 'vnc-target', 'ssh', ...(vnc.isUp() ? ['vnc-local'] : []), ...(vstream.info().ok ? ['vnc-fluid:' + vstream.info().codecs.join('+') + (vstream.info().nvenc ? '+gpu' : '')] : [])] });
+  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, maxTabs: MAX_TABS, features: ['sessions', 'files', 'view', 'vnc', 'vnc-target', 'ssh', 'layouts', ...(vnc.isUp() ? ['vnc-local'] : []), ...(vstream.info().ok ? ['vnc-fluid:' + vstream.info().codecs.join('+') + (vstream.info().nvenc ? '+gpu' : '')] : [])] });
   syncClient(client);
+  send(client, { t: 'layouts', list: layouts.list() });
 
   ws.on('message', (raw) => {
     try {
@@ -589,6 +593,16 @@ function handleMessage(client, raw) {
       break;
     case 'reorderGroups':
       if (Array.isArray(msg.ids)) terminals.reorderGroups(msg.ids.filter((x) => typeof x === 'string'));
+      break;
+    case 'layoutSave':
+      if (layouts.save({ id: msg.id, name: msg.name, tree: msg.tree })) sendLayouts();
+      else send(client, { t: 'error', msg: 'That layout could not be saved.' });
+      break;
+    case 'layoutRename':
+      if (typeof msg.id === 'string' && layouts.rename(msg.id, msg.name)) sendLayouts();
+      break;
+    case 'layoutDelete':
+      if (typeof msg.id === 'string' && layouts.remove(msg.id)) sendLayouts();
       break;
     case 'ping':
       send(client, { t: 'pong' });

@@ -200,6 +200,17 @@ between panes to resize (double-click: halves); the ✕ on a pane's title bar cl
 the pane (the terminal keeps running). The arrangement of terminals is remembered
 in this browser. Not offered on phones.
 
+**Saved layouts.** Once the screen is split, a **Layouts** section appears in the
+sidebar above the sessions. **+ Save** keeps the panes on screen under a name:
+which terminals, Files (with its folder) or the Desktop, and how the area is split
+and sized. A click on a saved layout puts those panes back, opening Files or the
+Desktop if it is part of it; the one on screen is highlighted. On hover: ⤓ replaces
+it with the panes on screen, ✎ renames it (or double-click), ✕ deletes it (the
+terminals stay open). The list is kept on the server (`DATA_DIR/layouts.json`), so
+every browser signed in sees the same layouts. If a terminal of a layout was closed
+since, another tab of the same session takes its place; a session that is gone is
+left out.
+
 ### Files
 
 The folder button at the top of the sidebar (**Ctrl+Shift+F**, Cmd+Shift+F on a Mac) opens a file browser over the terminal, starting in your home folder.
@@ -373,6 +384,7 @@ lib/stream.js        Fluid desktop: ffmpeg screen capture to video over a WebSoc
 lib/ssh.js           saved SSH connections and key conversion
 lib/stt.js           dictation: recordings in, text out, through scripts/stt-worker.py
 lib/tls.js           self-signed certificate for HTTPS=1
+lib/layouts.js       saved layouts of panes (DATA_DIR/layouts.json)
 LICENSE             MIT license
 INSTALL.md          step-by-step installation instructions for an AI agent
 docs/               screenshots and the demo video used in this README

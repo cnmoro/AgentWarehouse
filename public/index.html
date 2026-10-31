@@ -37,6 +37,13 @@
       <div id="search" class="search" hidden>
         <input id="search-q" type="search" placeholder="Find a session…" aria-label="Find a session" autocomplete="off" spellcheck="false">
       </div>
+      <section id="layouts" class="layouts" aria-label="Saved layouts" hidden>
+        <div class="layouts-head">
+          <button class="layouts-toggle" aria-expanded="true"><span class="chev" aria-hidden="true">▾</span><span>Layouts</span></button>
+          <button class="layouts-save" title="Save the panes on screen (terminals, Files, Desktop and how they are split) as a layout">+ Save</button>
+        </div>
+        <ul class="layouts-list"></ul>
+      </section>
       <ul id="tabs" role="tablist" aria-orientation="vertical"
           title="Ctrl+Shift+E to get here. Arrow keys to move, F2 to rename, Delete to close, Esc back to the terminal"></ul>
       <div class="sidebar-foot">
