@@ -318,8 +318,6 @@ const sendLayouts = () => { for (const c of clients) send(c, { t: 'layouts', lis
 
 // The desktop: noVNC's WebSocket, relayed to the VNC server (lib/vnc.js).
 const vncWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
-const streamOpen = new Map(); // session id -> video streams
-let streamsTotal = 0;
 
 function onUpgrade(req, socket, head) {
   socket.on('error', () => {});
@@ -344,15 +342,17 @@ function onUpgrade(req, socket, head) {
       socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
       return socket.destroy();
     }
-    if ((streamOpen.get(session.id) || 0) >= 2 || streamsTotal >= vstream.MAX_STREAMS) {
+    // Counted from the streams that are really open (as the desktop connections below).
+    const streams = [...vncWss.clients].filter((c) => c.route === 'vstream' && c.readyState === c.OPEN);
+    const mine = streams.filter((c) => c.sessionId === session.id).length;
+    if (mine >= 2 || streams.length >= vstream.MAX_STREAMS) {
+      console.log(`[vstream] ${session.email} refused (429): ${mine} video streams open in this session, ${streams.length} in all`);
       socket.write('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n');
       return socket.destroy();
     }
     return vncWss.handleUpgrade(req, socket, head, (ws) => {
       ws.sessionId = session.id;
-      streamOpen.set(session.id, (streamOpen.get(session.id) || 0) + 1);
-      streamsTotal++;
-      ws.on('close', () => { streamOpen.set(session.id, Math.max(0, (streamOpen.get(session.id) || 1) - 1)); streamsTotal = Math.max(0, streamsTotal - 1); });
+      ws.route = 'vstream';
       vstream.stream(ws, session.email, opts);
     });
   }
