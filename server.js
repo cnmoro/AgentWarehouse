@@ -318,7 +318,6 @@ const sendLayouts = () => { for (const c of clients) send(c, { t: 'layouts', lis
 
 // The desktop: noVNC's WebSocket, relayed to the VNC server (lib/vnc.js).
 const vncWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
-const vncOpen = new Map(); // session id -> connections
 const streamOpen = new Map(); // session id -> video streams
 let streamsTotal = 0;
 
@@ -335,6 +334,7 @@ function onUpgrade(req, socket, head) {
     console.error('upgrade error:', err.message);
   }
   if (!session) {
+    if (route === 'vnc' || route === 'vstream') console.log(`[${route}] refused (401): ${!allowedHost(req) ? `host ${req.headers.host} not accepted` : !sameOrigin(req) ? `origin ${req.headers.origin} does not match` : 'not signed in'}`);
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
     return socket.destroy();
   }
@@ -359,17 +359,20 @@ function onUpgrade(req, socket, head) {
   if (route === 'vnc') {
     const target = vnc.parseTarget(req.url);
     if (!target) {
+      console.log(`[vnc] ${session.email} refused (400): not a valid address in ${req.url.slice(0, 200)}`);
       socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
       return socket.destroy();
     }
-    if ((vncOpen.get(session.id) || 0) >= vnc.MAX_PER_SESSION) {
+    // Counted from the connections that are really open, so a close that went unnoticed cannot lock the desktop out.
+    const open = [...vncWss.clients].filter((c) => c.route === 'vnc' && c.sessionId === session.id && c.readyState === c.OPEN);
+    if (open.length >= vnc.MAX_PER_SESSION) {
+      console.log(`[vnc] ${session.email} refused (429): ${open.length} desktop connections already open in this session`);
       socket.write('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n');
       return socket.destroy();
     }
     return vncWss.handleUpgrade(req, socket, head, (ws) => {
       ws.sessionId = session.id;
-      vncOpen.set(session.id, (vncOpen.get(session.id) || 0) + 1);
-      ws.on('close', () => vncOpen.set(session.id, Math.max(0, (vncOpen.get(session.id) || 1) - 1)));
+      ws.route = 'vnc';
       console.log(`[vnc] ${session.email} opened ${target.label}`);
       vnc.bridge(ws, `${session.email} -> ${target.label}`, target);
     });
