@@ -861,6 +861,14 @@ const Vnc = (() => {
     // Keep the box short and give BackSpace its filler back, between words (never in the middle of a composition).
     if (!kbdComposing && (now.length < KBD_FILL.length / 2 || now.length > 200 || now.endsWith('\n'))) kbdReset();
   }
+  // A phone browser zooms the page in on a text box that gets the focus when it finds its text too small to read; this
+  // one is a hidden 1-pixel box in the desktop's corner, so that zoom is all the user would see. The page is held at its
+  // own scale while the box has the focus.
+  const viewportMeta = document.querySelector('meta[name="viewport"]');
+  const viewportBase = viewportMeta ? viewportMeta.content : '';
+  function holdPageZoom(on) {
+    if (viewportMeta) viewportMeta.content = on ? `${viewportBase}, maximum-scale=1` : viewportBase;
+  }
   function setupTouchKeyboard() {
     kbdReset();
     el.kbd.addEventListener('input', kbdSync);
@@ -873,11 +881,11 @@ const Vnc = (() => {
       v.rfb.sendKey(k[0], k[1]);
     });
     el.kbd.addEventListener('focus', () => { el.kbdBtn.classList.add('on'); el.kbdBtn.setAttribute('aria-pressed', 'true'); kbdReset(); });
-    el.kbd.addEventListener('blur', () => { el.kbdBtn.classList.remove('on'); el.kbdBtn.setAttribute('aria-pressed', 'false'); kbdComposing = false; });
+    el.kbd.addEventListener('blur', () => { el.kbdBtn.classList.remove('on'); el.kbdBtn.setAttribute('aria-pressed', 'false'); kbdComposing = false; holdPageZoom(false); });
     // Keep the focus where it is while the button is pressed, so the click can tell whether the keyboard was up.
     el.kbdBtn.addEventListener('pointerdown', (e) => e.preventDefault());
     el.kbdBtn.addEventListener('click', () => {
-      if (document.activeElement === el.kbd) { el.kbd.blur(); refocusDesktop(); } else el.kbd.focus({ preventScroll: true });
+      if (document.activeElement === el.kbd) { el.kbd.blur(); refocusDesktop(); } else { holdPageZoom(true); el.kbd.focus({ preventScroll: true }); }
     });
   }
 
@@ -919,25 +927,58 @@ const Vnc = (() => {
     c.move(at.x - (c._hotSpot ? c._hotSpot.x : 0), at.y - (c._hotSpot ? c._hotSpot.y : 0));
   }
 
-  function applyZoom() {
-    if (zoom.z <= 1) Object.assign(zoom, { z: 1, x: 0, y: 0 });
+  // The view moves in two ways: the zoom's offset, and noVNC's own scrolling when the desktop is shown at its own size
+  // (Scale to fit off), which is larger than the panel. `shown` is the zoom the panel has now.
+  const shown = { z: 1, x: 0, y: 0 };
+  const scroller = () => (v.rfb && v.rfb._screen) || null;
+  const scrollable = () => { const sc = scroller(); return !!sc && (sc.scrollWidth > sc.clientWidth + 1 || sc.scrollHeight > sc.clientHeight + 1); };
+  // The part of the desktop the panel shows without the zoom, in the panel's own pixels: [left, top, right, bottom].
+  function desktopBox() {
     const w = el.body.clientWidth, h = el.body.clientHeight;
-    zoom.x = clamp(zoom.x, w * (1 - zoom.z), 0);
-    zoom.y = clamp(zoom.y, h * (1 - zoom.z), 0);
+    const c = v.rfb && v.rfb._canvas, sc = scroller();
+    if (!c || !c.isConnected) return [0, 0, w, h];
+    const b = el.body.getBoundingClientRect(), r = c.getBoundingClientRect(), q = sc ? sc.getBoundingClientRect() : b;
+    const un = (n, o, off) => (n - o - off) / shown.z;
+    return [
+      un(Math.max(r.left, q.left), b.left, shown.x), un(Math.max(r.top, q.top), b.top, shown.y),
+      un(Math.min(r.right, q.right), b.left, shown.x), un(Math.min(r.bottom, q.bottom), b.top, shown.y),
+    ];
+  }
+  function applyZoom() {
+    zoom.z = clamp(zoom.z, 1, MAX_ZOOM);
+    const w = el.body.clientWidth, h = el.body.clientHeight;
+    const [l, t, r, bt] = desktopBox();
+    // Zoomed in, the desktop covers the panel edge to edge where it is large enough, and stays centred where it is not.
+    const axis = (pos, lo, hi, size) => ((hi - lo) * zoom.z >= size ? clamp(pos, size - hi * zoom.z, -lo * zoom.z) : (size - (lo + hi) * zoom.z) / 2);
+    if (zoom.z === 1) zoom.x = zoom.y = 0;
+    else { zoom.x = axis(zoom.x, l, r, w); zoom.y = axis(zoom.y, t, bt, h); }
+    Object.assign(shown, zoom);
     el.screen.style.transform = zoom.z === 1 ? '' : `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.z})`;
     el.zoom.hidden = zoom.z === 1;
     el.zoom.textContent = `${zoom.z.toFixed(1)}× ✕`;
     if (v.stream) syncVideo(v.stream);
     if (v.touch === 'pad' && pad.x >= 0 && live()) showPointer(pad);
   }
+  // Zoom and offset as wished; what the zoom cannot cover (the edge of the desktop is reached) scrolls noVNC's view.
+  function setView(z, x, y) {
+    Object.assign(zoom, { z, x, y });
+    applyZoom();
+    const sc = scroller();
+    const dx = (x - zoom.x) / zoom.z, dy = (y - zoom.y) / zoom.z;
+    if (sc && (Math.abs(dx) >= 0.5 || Math.abs(dy) >= 0.5)) {
+      sc.scrollLeft -= dx;
+      sc.scrollTop -= dy;
+      if (v.stream) syncVideo(v.stream);
+      if (v.touch === 'pad' && pad.x >= 0 && live()) showPointer(pad);
+    }
+  }
   function resetZoom() { zoom.z = 1; applyZoom(); }
-  // Zoomed in: keep the pointer on screen.
+  // Keep the touchpad's pointer on screen: the view follows it (zoomed in, or a desktop larger than the panel).
   function follow() {
-    if (zoom.z === 1) return;
     const b = el.body.getBoundingClientRect(), p = toClient(pad.x, pad.y), m = 40;
     const dx = p.x < b.left + m ? b.left + m - p.x : p.x > b.right - m ? b.right - m - p.x : 0;
     const dy = p.y < b.top + m ? b.top + m - p.y : p.y > b.bottom - m ? b.bottom - m - p.y : 0;
-    if (dx || dy) { zoom.x += dx; zoom.y += dy; applyZoom(); }
+    if (dx || dy) setView(zoom.z, zoom.x + dx, zoom.y + dy);
   }
   const two = (ts) => ({ mx: (ts[0].clientX + ts[1].clientX) / 2, my: (ts[0].clientY + ts[1].clientY) / 2, d: Math.hypot(ts[0].clientX - ts[1].clientX, ts[0].clientY - ts[1].clientY) || 1 });
   const byId = (list, id) => [...list].find((t) => t.identifier === id);
@@ -958,7 +999,7 @@ const Vnc = (() => {
     for (const t of e.changedTouches) g.start.set(t.identifier, { x: t.clientX, y: t.clientY });
     g.max = Math.max(g.max, ts.length);
     if (ts.length > 1) clearTimeout(g.hold);
-    if (ts.length === 2 && !g.mode) { g.two = two(ts); g.mid = { x: g.two.mx, y: g.two.my }; g.acc = { x: 0, y: 0 }; g.from = { ...zoom }; }
+    if (ts.length === 2 && !g.mode) { g.two = two(ts); g.mid = { x: g.two.mx, y: g.two.my }; g.acc = { x: 0, y: 0 }; g.prev = g.two; }
   }
 
   function onHold() {
@@ -1005,18 +1046,18 @@ const Vnc = (() => {
       const now = two(ts), s = g.two;
       if (!g.mode) {
         const moved = Math.hypot(now.mx - s.mx, now.my - s.my);
-        // Two fingers apart or together zoom; side by side they scroll (or, zoomed in with direct touch, move the view).
-        if (Math.abs(now.d - s.d) > PINCH_START || (v.touch === 'direct' && zoom.z > 1 && moved > TAP_MOVE)) g.mode = 'pinch';
+        // Two fingers apart or together zoom; side by side they scroll (or, with direct touch on a desktop larger than the panel, move the view).
+        if (Math.abs(now.d - s.d) > PINCH_START || (v.touch === 'direct' && (zoom.z > 1 || scrollable()) && moved > TAP_MOVE)) g.mode = 'pinch';
         else if (moved > TAP_MOVE) g.mode = 'scroll';
         else return;
       }
       if (g.mode === 'pinch') {
-        const b = el.body.getBoundingClientRect(), f = g.from;
-        const z = clamp((f.z * now.d) / s.d, 1, MAX_ZOOM);
+        const b = el.body.getBoundingClientRect(), f = g.prev;
+        const z = clamp((zoom.z * now.d) / f.d, 1, MAX_ZOOM);
         // The point of the desktop that was between the fingers stays between them.
-        const px = (s.mx - b.left - f.x) / f.z, py = (s.my - b.top - f.y) / f.z;
-        Object.assign(zoom, { z, x: now.mx - b.left - px * z, y: now.my - b.top - py * z });
-        applyZoom();
+        const px = (f.mx - b.left - zoom.x) / zoom.z, py = (f.my - b.top - zoom.y) / zoom.z;
+        setView(z, now.mx - b.left - px * z, now.my - b.top - py * z);
+        g.prev = now;
       } else {
         g.acc.x += now.mx - g.mid.x;
         g.acc.y += now.my - g.mid.y;
