@@ -80,6 +80,11 @@ sudo apt install build-essential python3 openssh-client putty-tools ffmpeg \
   tigervnc-standalone-server tigervnc-common tigervnc-tools xfce4 dbus-x11
 ```
 
+**macOS** works too, without the Desktop's Fluid mode (it captures an X display): install the Xcode command line tools
+and, with Homebrew, `node` and `bash` (the bash that comes with macOS is too old for the per-tab history), and start the
+server with `SHELL=/opt/homebrew/bin/bash`. A launchd agent in `~/Library/LaunchAgents` takes the place of the systemd
+service. There the folder and the command of each tab come from `ps` and `lsof` instead of `/proc`.
+
 ### Install
 
 ```sh

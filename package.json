@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node --env-file-if-exists=.env server.js",
-    "set-user": "node scripts/set-user.js"
+    "set-user": "node scripts/set-user.js",
+    "postinstall": "node scripts/fix-pty.js"
   },
   "dependencies": {
     "@novnc/novnc": "^1.7.0",
