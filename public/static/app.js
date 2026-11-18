@@ -76,8 +76,17 @@ function sendInput(id, data, type = 'in') {
   }
 }
 
+// Tells the parts kept in other files (notes.js) that what is on screen, the
+// tab names or the connection changed: one 'wt:view' event per frame at most.
+let viewTick = 0;
+function viewChanged() {
+  if (viewTick) return;
+  viewTick = requestAnimationFrame(() => { viewTick = 0; document.dispatchEvent(new Event('wt:view')); });
+}
+
 function setConnected(up) {
   state.connected = up;
+  viewChanged();
   if (!up && state.ctrlSticky) setCtrlSticky(false);
   for (const el of $$('.conn')) {
     el.classList.toggle('up', up);
@@ -1170,6 +1179,7 @@ function renderTabs() {
   renderSidebar();
   renderStrip();
   updateTitle();
+  viewChanged();
   const full = state.tabs.length >= MAX_TABS;
   const limit = `Limit of ${MAX_TABS} terminals reached`;
   for (const b of $$('.new-tab')) {
@@ -1911,6 +1921,7 @@ function applyLayout() {
       : `left:${r.x}px;top:${top + a.y + a.h}px;width:${r.w}px;height:${GAP}px`;
   });
   trimViews();
+  viewChanged();
 }
 
 function makeSplitter() {

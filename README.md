@@ -305,6 +305,14 @@ python3.12 -m venv .venv-stt && .venv-stt/bin/pip install soda-stt   # about 200
 
 (`STT_PYTHON` points at another interpreter that has soda-stt.) The engine starts on first use and stops after five idle minutes. Browsers only allow the microphone on **HTTPS** or on `localhost`, so over plain `http://` on the Tailscale or home-network address the button explains that instead of recording; see [HTTPS with `tailscale serve`](#https-with-tailscale-serve-recommended). On a phone, holding the button also works by touch.
 
+### Notes
+
+The button with the page icon, next to the microphone, opens a small notepad over the terminals for writing a long prompt before sending it. It is a plain text box (no Markdown): select with the mouse or Shift+arrows, copy, paste, undo, and Enter or Shift+Enter for a new line. The title bar names the terminal it sends to, which is the one that has the keyboard; in a split screen, click a pane to change it.
+
+- **Send** (or Ctrl+Enter, ⌘ Enter on a Mac) sends all of the text to that terminal and presses Enter. When the program there has asked for bracketed paste (bash, zsh, Claude Code, Codex and most editors do), the text goes as a single paste, so its line breaks stay line breaks and the whole thing is submitted as one prompt; otherwise each line break acts as Enter. Control characters are left out. The pad is then cleared; Ctrl+Z in it brings the text back.
+- **Roll up** folds the pad down to its title and buttons (Esc does the same and returns to the terminal); **Expand** opens it again. ✕ or the button closes it, and a dot on the button shows that text is waiting.
+- Drag the top-left corner to resize it (double-click to reset). The text, the size and whether the pad is open or rolled up are kept in this browser, so they survive a reload or a server restart. The pad hides while Files, the Desktop or SSH fill the page, and comes back when they close.
+
 ### Long history
 
 The terminal itself keeps the last 10,000 lines (`SCROLLBACK`). Everything older is moved to disk, up to 200,000 lines per tab by default (`HISTORY_LINES`), and loaded only when you look at it:
@@ -390,6 +398,7 @@ lib/ssh.js           saved SSH connections and key conversion
 lib/stt.js           dictation: recordings in, text out, through scripts/stt-worker.py
 lib/tls.js           self-signed certificate for HTTPS=1
 lib/layouts.js       saved layouts of panes (DATA_DIR/layouts.json)
+lib/atomic.js        data files replaced so a power cut leaves the old or the new one
 LICENSE             MIT license
 INSTALL.md          step-by-step installation instructions for an AI agent
 docs/               screenshots and the demo video used in this README

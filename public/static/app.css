@@ -1041,6 +1041,76 @@ body.resizing #main { pointer-events: none; }
 @media (max-width: 700px) { #mic { bottom: 58px; right: 14px; } }
 @media (prefers-reduced-motion: reduce) { #mic.rec, #mic.busy, #mic.busy svg { animation: none; } }
 
+/* ---------- notes pad (notes.js) ---------- */
+/* Its button sits left of the microphone (or in its place when there is none). */
+#notes-btn {
+  position: absolute; right: 22px; bottom: 22px; z-index: 6; width: 48px; height: 48px; border-radius: 50%;
+  display: grid; place-items: center; padding: 0; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--line); box-shadow: 0 2px 10px rgba(0,0,0,.4); opacity: .55; cursor: pointer;
+  transition: opacity .15s, color .15s, border-color .15s;
+}
+#main:has(#mic) #notes-btn { right: 82px; }
+#notes-btn[hidden] { display: none; }
+#notes-btn:hover, #notes-btn:focus-visible { opacity: 1; outline: none; border-color: var(--accent); }
+#notes-btn.on { opacity: 1; color: var(--accent); border-color: var(--accent); }
+/* Text waiting in the pad: a dot on the button. */
+#notes-btn.has-text::after {
+  content: ""; position: absolute; top: 9px; right: 9px; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 0 2px var(--panel-2);
+}
+.notes {
+  position: absolute; right: 22px; bottom: 82px; z-index: 19; display: flex; flex-direction: column;
+  width: var(--notes-w, 460px); max-width: calc(100% - 44px); max-height: calc(100% - 100px);
+  background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 14px 44px rgba(0,0,0,.55), 0 0 0 1px rgba(0,0,0,.2);
+}
+.notes[hidden] { display: none; }
+.notes button { font: inherit; }
+.notes-grip { position: absolute; left: -3px; top: -3px; width: 16px; height: 16px; z-index: 1; cursor: nwse-resize; touch-action: none; }
+.notes-grip::before {
+  content: ""; position: absolute; left: 6px; top: 6px; width: 7px; height: 7px;
+  border-left: 2px solid var(--muted); border-top: 2px solid var(--muted); border-top-left-radius: 3px; opacity: .55;
+}
+.notes-grip:hover::before { opacity: 1; border-color: var(--accent); }
+.notes-head { flex: none; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 7px 8px 7px 16px; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+.notes-title { flex: none; font-weight: 600; }
+.notes-target { flex: 1; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notes-icon {
+  flex: none; width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px;
+  background: none; color: var(--muted); cursor: pointer; font-size: 13px;
+}
+.notes-icon:hover, .notes-icon:focus-visible { background: var(--panel-2); color: var(--text); outline: none; }
+.notes-text {
+  display: block; flex: 0 1 var(--notes-h, 220px); min-height: 72px; width: 100%; margin: 0; padding: 10px 14px;
+  border: 0; resize: none; outline: none; background: var(--bg); color: var(--text);
+  font: 13px/1.55 var(--mono); tab-size: 4; white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto;
+}
+.notes-text::placeholder { color: var(--muted); opacity: .8; }
+.notes-text::selection { background: #2f4a66; }
+.notes-foot { flex: none; display: flex; align-items: center; gap: 6px; padding: 7px 8px 7px 14px; border-top: 1px solid var(--line); }
+.notes-count { flex: 1; min-width: 0; color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.notes-roll, .notes-send {
+  flex: none; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border-radius: 6px;
+  font-size: 12.5px; cursor: pointer;
+}
+.notes-roll { border: 1px solid var(--line); background: transparent; color: var(--text); }
+.notes-roll:hover, .notes-roll:focus-visible { border-color: var(--accent); color: var(--accent); outline: none; }
+.notes-send { border: 0; background: #1d6fcf; color: #fff; font-weight: 600; }
+.notes-send:hover:not(:disabled), .notes-send:focus-visible { background: #2a7fe0; outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
+.notes-send:disabled { opacity: .4; cursor: not-allowed; }
+/* Rolled up: just the title and the buttons. */
+.notes.rolled .notes-text, .notes.rolled .notes-grip { display: none; }
+.notes.rolled .notes-head { border-bottom: 0; }
+@media (max-width: 700px) {
+  #notes-btn { bottom: 58px; right: 14px; }
+  #main:has(#mic) #notes-btn { right: 74px; }
+  .notes { left: 8px; right: 8px; bottom: 114px; width: auto; max-width: none; max-height: calc(100% - 130px); }
+  .notes-grip { display: none; }
+  .notes-text { font-size: 16px; } /* 16px: iOS does not zoom into it */
+  .notes-icon { width: 32px; height: 32px; }
+  .notes-roll, .notes-send { height: 34px; }
+}
+
 /* The view that is open (Files, Desktop, SSH): its sidebar button stays lit. */
 .head-tool.on, .icon-btn.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--panel-2)); }
 
