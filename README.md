@@ -297,7 +297,7 @@ Resizing needs a VNC server that supports it (TigerVNC's `Xvnc` does).
 
 ### Dictation
 
-A round microphone button sits at the bottom right of the terminals. **Hold it, speak, let go**: the recording is transcribed on the server and the text is typed into the tab that was on screen (it is not sent with Enter, so you can read and fix it first). Recognition is Chrome's offline speech engine through [soda-stt](https://pypi.org/project/soda-stt/); nothing leaves the machine. The language is `pt-BR`; set `STT_LOCALE` in `.env` for another one the package carries. The button shows only when the server has the engine:
+A round microphone button sits at the bottom right of the terminals. **Hold it, speak, let go**: the recording is transcribed on the server and the text is typed into the tab that was on screen (it is not sent with Enter, so you can read and fix it first). While the [Notes](#notes) pad is open (not rolled up), the text goes into the pad instead, at its cursor. Recognition is Chrome's offline speech engine through [soda-stt](https://pypi.org/project/soda-stt/); nothing leaves the machine. The language is `pt-BR`; set `STT_LOCALE` in `.env` for another one the package carries. The button shows only when the server has the engine:
 
 ```sh
 python3.12 -m venv .venv-stt && .venv-stt/bin/pip install soda-stt   # about 200 MB, with the pt-BR model; needs ffmpeg

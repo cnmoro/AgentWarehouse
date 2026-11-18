@@ -1,7 +1,8 @@
 'use strict';
 // Dictation button (bottom right of the terminals): hold, speak, release. The
 // recording goes to /api/stt/transcribe and the text is typed into the tab that
-// was on screen when the button was pressed. Needs a server with soda-stt
+// was on screen when the button was pressed, or into the Notes pad (notes.js)
+// when that was open. Needs a server with soda-stt
 // installed (the button does not show otherwise) and a page the browser
 // treats as secure (HTTPS or localhost), because that is when it allows the
 // microphone.
@@ -19,9 +20,10 @@
   function setState(s) {
     btn.classList.toggle('rec', s === 'rec');
     btn.classList.toggle('busy', s === 'busy');
-    btn.title = s === 'rec' ? 'Listening… release to type it'
+    const where = window.Notes && window.Notes.isOpen() ? 'in Notes' : 'in the terminal';
+    btn.title = s === 'rec' ? `Listening… release to type it ${where}`
       : s === 'busy' ? 'Transcribing…'
-        : 'Hold to dictate, release to type it in the terminal';
+        : `Hold to dictate, release to type it ${where}`;
     btn.setAttribute('aria-pressed', s === 'rec' ? 'true' : 'false');
   }
 
@@ -32,14 +34,15 @@
 
   async function start() {
     if (busy || rec) return;
-    if (!state.active) { toast('Open a terminal first.'); return; }
+    const toNotes = !!(window.Notes && window.Notes.isOpen());
+    if (!state.active && !toNotes) { toast('Open a terminal first.'); return; }
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
       toast(window.isSecureContext
         ? 'This browser cannot record audio.'
         : 'The browser only allows the microphone on HTTPS or localhost. Open this page through https:// (for example tailscale serve) or http://localhost.', 9000);
       return;
     }
-    const r = { chunks: [], started: 0, tab: state.active, aborted: false, stream: null, recorder: null, timer: 0 };
+    const r = { chunks: [], started: 0, tab: state.active, toNotes, aborted: false, stream: null, recorder: null, timer: 0 };
     rec = r;
     setState('rec');
     try {
@@ -82,6 +85,7 @@
       // One line, no control characters: it is typed, never run by itself.
       const text = String(data.text || '').replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').trim();
       if (!text) { toast('Did not catch anything.', 2500); return; }
+      if (r.toNotes && window.Notes) { window.Notes.insert(text); return; }
       const id = state.tabs.some((t) => t.id === r.tab) ? r.tab : state.active;
       if (!id) return;
       sendInput(id, text);
@@ -109,6 +113,8 @@
     });
     for (const ev of ['pointerup', 'pointercancel']) btn.addEventListener(ev, stop);
     btn.addEventListener('contextmenu', (e) => e.preventDefault());
+    // The tooltip says where the text will go, which depends on whether Notes is open.
+    btn.addEventListener('pointerenter', () => { if (!rec && !busy) setState('idle'); });
     // Same thing from the keyboard: hold Space or Enter while the button has focus.
     btn.addEventListener('keydown', (e) => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); start(); } });
     btn.addEventListener('keyup', (e) => { if (e.key === ' ' || e.key === 'Enter') stop(); });

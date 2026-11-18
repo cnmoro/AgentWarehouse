@@ -287,6 +287,30 @@
 
   // ---------------------------------------------------------------- wiring
 
+  // Text from elsewhere (dictation, stt.js) typed into the pad at its cursor,
+  // the way typing would put it there, so Ctrl+Z takes it out again.
+  function insert(text) {
+    const t = el.text;
+    const start = t.selectionStart, end = t.selectionEnd;
+    const before = t.value.slice(0, start);
+    const after = t.value.slice(end);
+    const lead = before && !/\s$/.test(before) ? ' ' : '';
+    const trail = after && !/^\s/.test(after) ? ' ' : '';
+    t.focus();
+    t.setSelectionRange(start, end);
+    let done = false;
+    try { done = document.execCommand('insertText', false, lead + text + trail); } catch { /* not supported */ }
+    if (!done) {
+      t.setRangeText(lead + text + trail, start, end, 'end');
+      scheduleSave();
+    }
+    flushSave();
+    updateFoot();
+  }
+
+  // For stt.js: dictation goes into the pad while it is open (not rolled up) and on screen.
+  window.Notes = { isOpen: () => mode === 'open' && onScreen && !el.panel.hidden, insert };
+
   build();
   // What is on screen changed (app.js), or one of the full-page views opened or closed.
   document.addEventListener('wt:view', render);
