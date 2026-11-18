@@ -17,6 +17,7 @@ const vstream = require('./lib/stream');
 const stt = require('./lib/stt');
 const tls = require('./lib/tls');
 const { Layouts } = require('./lib/layouts');
+const { Notes } = require('./lib/notes');
 
 // Configuration errors exit with 78 (EX_CONFIG); the systemd unit does not
 // restart on that code, since retrying cannot help.
@@ -315,6 +316,7 @@ const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 })
 const clients = new Set();
 const layouts = new Layouts(DATA_DIR);
 const sendLayouts = () => { for (const c of clients) send(c, { t: 'layouts', list: layouts.list() }); };
+const notes = new Notes(DATA_DIR);
 
 // The desktop: noVNC's WebSocket, relayed to the VNC server (lib/vnc.js).
 const vncWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
@@ -498,9 +500,11 @@ function onConnection(ws, session) {
   clients.add(client);
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
-  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, maxTabs: MAX_TABS, features: ['sessions', 'files', 'view', 'vnc', 'vnc-target', 'ssh', 'layouts', ...(vnc.isUp() ? ['vnc-local'] : []), ...(vstream.info().ok ? ['vnc-fluid:' + vstream.info().codecs.join('+') + (vstream.info().nvenc ? '+gpu' : '')] : [])] });
+  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, maxTabs: MAX_TABS, features: ['sessions', 'files', 'view', 'vnc', 'vnc-target', 'ssh', 'layouts', 'notes', ...(vnc.isUp() ? ['vnc-local'] : []), ...(vstream.info().ok ? ['vnc-fluid:' + vstream.info().codecs.join('+') + (vstream.info().nvenc ? '+gpu' : '')] : [])] });
   syncClient(client);
   send(client, { t: 'layouts', list: layouts.list() });
+  const note = notes.get(client.email);
+  send(client, { t: 'notes', text: note.text, rev: note.rev });
 
   ws.on('message', (raw) => {
     try {
@@ -607,6 +611,19 @@ function handleMessage(client, raw) {
     case 'layoutDelete':
       if (typeof msg.id === 'string' && layouts.remove(msg.id)) sendLayouts();
       break;
+    case 'notesSet': {
+      // The Notes pad's text (the user's, on every device). The page that sent it gets the revision back
+      // (with its cid, so it knows the answer is to its own change); the user's other pages get the text.
+      const entry = notes.set(client.email, msg.text);
+      if (!entry) { send(client, { t: 'error', msg: 'Notes are too long to keep (the limit is about a million characters).' }); break; }
+      sessions.touch(client.sessionId);
+      const cid = str(msg.cid);
+      for (const c of clients) {
+        if (c.email !== client.email) continue;
+        send(c, c === client ? { t: 'notes', rev: entry.rev, cid, own: true } : { t: 'notes', text: entry.text, rev: entry.rev });
+      }
+      break;
+    }
     case 'ping':
       send(client, { t: 'pong' });
       break;
@@ -721,6 +738,7 @@ async function shutdown() {
     server.close();
     for (const x of extraServers) x.close();
     for (const c of clients) c.ws.terminate();
+    notes.close();
     await terminals.shutdown();
   } catch (err) {
     console.error('shutdown error:', err);

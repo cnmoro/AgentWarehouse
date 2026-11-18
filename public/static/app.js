@@ -178,6 +178,8 @@ function connect() {
           Vnc.setTargetSupport(Array.isArray(msg.features) && msg.features.includes('vnc-target'));
           Vnc.setAvailable(Array.isArray(msg.features) && (msg.features.includes('vnc') || msg.features.includes('vnc-local')));
         }
+        // Older servers keep no notes: the pad keeps its text in the browser only.
+        if (window.Notes) window.Notes.setServer(Array.isArray(msg.features) && msg.features.includes('notes'));
         break;
       case 'list': onList(msg.tabs, msg.groups); break;
       case 'snap': onSnapshot(msg); break;
@@ -186,6 +188,7 @@ function connect() {
       case 'act': onAct(msg); break;
       case 'created': activate(msg.id); break;
       case 'error': toast(msg.msg); break;
+      case 'notes': if (window.Notes) window.Notes.fromServer(msg); break;
       case 'layouts': state.layouts = Array.isArray(msg.list) ? msg.list : []; renderLayouts(); break;
       case 'pong': break;
       case 'histInfo': onHistInfo(msg); break;

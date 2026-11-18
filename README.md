@@ -311,7 +311,8 @@ The button with the page icon, next to the microphone, opens a small notepad ove
 
 - **Send** (or Ctrl+Enter, ⌘ Enter on a Mac) sends all of the text to that terminal and presses Enter. When the program there has asked for bracketed paste (bash, zsh, Claude Code, Codex and most editors do), the text goes as a single paste, so its line breaks stay line breaks and the whole thing is submitted as one prompt; otherwise each line break acts as Enter. Control characters are left out. The pad is then cleared; Ctrl+Z in it brings the text back.
 - **Roll up** folds the pad down to its title and buttons (Esc does the same and returns to the terminal); **Expand** opens it again. ✕ or the button closes it, and a dot on the button shows that text is waiting.
-- Drag the top-left corner to resize it (double-click to reset). The text, the size and whether the pad is open or rolled up are kept in this browser, so they survive a reload or a server restart. The pad hides while Files, the Desktop or SSH fill the page, and comes back when they close.
+- The text is yours on every device: it is kept on the server (`DATA_DIR/notes.json`, one per login) and shows up in your other open pages as you type, so it survives a reload, a server restart, and moving from the laptop to the phone. Each browser also keeps a copy, so edits made while the connection is down are sent when it is back (the last change to reach the server wins). Text written in a browser before this existed is added to the shared text the first time that browser connects, never dropped.
+- Drag the top-left corner to resize it (double-click to reset). The size and whether the pad is open or rolled up belong to each browser. The pad hides while Files, the Desktop or SSH fill the page, and comes back when they close.
 
 ### Long history
 
@@ -398,6 +399,7 @@ lib/ssh.js           saved SSH connections and key conversion
 lib/stt.js           dictation: recordings in, text out, through scripts/stt-worker.py
 lib/tls.js           self-signed certificate for HTTPS=1
 lib/layouts.js       saved layouts of panes (DATA_DIR/layouts.json)
+lib/notes.js         the Notes pad's text, one per login (DATA_DIR/notes.json)
 lib/atomic.js        data files replaced so a power cut leaves the old or the new one
 LICENSE             MIT license
 INSTALL.md          step-by-step installation instructions for an AI agent

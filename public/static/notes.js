@@ -3,17 +3,26 @@
 // right, next to the microphone). Write or paste a long prompt there with the
 // browser's own text editing (selection, Shift+arrows, copy and paste, undo),
 // then send all of it to the terminal that has the keyboard, followed by
-// Enter. The text, whether the pad is open or rolled up, and its size are kept
-// in this browser (localStorage), so they survive a reload or a server restart.
+// Enter.
+//
+// The text is the user's, the same on every device: it is kept on the server
+// (lib/notes.js) and pushed to the user's other open pages as it changes. This
+// browser keeps a copy too (localStorage), so the pad opens with its text at
+// once, and edits made while disconnected are sent when the connection is
+// back (the last change to reach the server wins). Whether the pad is open or
+// rolled up, and its size, belong to each browser. A server without notes
+// (older version) leaves the text in the browser only.
 //
 // Sending: when the program in the terminal has asked for bracketed paste (bash,
 // zsh, Claude Code, Codex and most editors do), the text goes as one paste, so
 // its line breaks stay line breaks and do not submit it line by line; Enter
 // follows a moment later, once the program has taken the paste in. Otherwise
 // it is typed as is, and each line break acts as Enter.
-/* global state, $, sendInput, toast, storage, sessionLabel, focusActive, mobile */
+/* global state, $, send, sendInput, toast, storage, sessionLabel, focusActive, mobile */
 (() => {
   const KEY_TEXT = 'wt.notes.text';
+  const KEY_REV = 'wt.notes.rev';     // the server's revision the copy here was last in step with
+  const KEY_DIRTY = 'wt.notes.dirty'; // '1': changed here, not yet confirmed by the server
   const KEY_MODE = 'wt.notes.mode'; // '' closed, 'open', 'rolled'
   const KEY_SIZE = 'wt.notes.size'; // {"w":460,"h":220}
   const MIN_W = 280, MIN_H = 72, DEF_W = 460, DEF_H = 220;
@@ -28,6 +37,17 @@
   let mode = ['open', 'rolled'].includes(storage(KEY_MODE)) ? storage(KEY_MODE) : '';
   let size = readSize();
   let saveTimer = 0;
+  // Server copy: whether the server keeps notes, this page's id in its answers,
+  // the text last sent and not yet confirmed.
+  const sync = {
+    server: false,
+    cid: Math.random().toString(36).slice(2, 12),
+    rev: Number(storage(KEY_REV)) || 0,
+    dirty: storage(KEY_DIRTY) === '1',
+    synced: storage(KEY_REV) !== null, // false: text from before notes were kept on the server
+    inflight: null,
+    timer: 0,
+  };
   let onScreen = false;
   const el = {};
 
@@ -82,7 +102,7 @@
     el.text.placeholder = `Write or paste here. ${sendKeys} sends it to the terminal and presses Enter.`;
     el.text.value = storage(KEY_TEXT) || '';
 
-    el.text.addEventListener('input', () => { scheduleSave(); updateFoot(); });
+    el.text.addEventListener('input', () => { changed(); updateFoot(); });
     el.text.addEventListener('blur', flushSave);
     el.text.addEventListener('keydown', onKey);
     el.panel.addEventListener('pointerenter', updateTarget);
@@ -162,19 +182,95 @@
 
   // ---------------------------------------------------------------- saving
 
-  function scheduleSave() {
+  // The text changed here (typing, a paste, dictation, clearing after Send).
+  function changed() {
+    sync.dirty = true;
+    storage(KEY_DIRTY, '1');
     clearTimeout(saveTimer);
     saveTimer = setTimeout(flushSave, 300);
+    clearTimeout(sync.timer);
+    sync.timer = setTimeout(push, 400);
   }
   function flushSave() {
     clearTimeout(saveTimer);
     saveTimer = 0;
     storage(KEY_TEXT, el.text.value);
   }
-  window.addEventListener('pagehide', flushSave);
-  // Another tab of this browser changed the notes: take its text unless this one is being typed in.
+  window.addEventListener('pagehide', () => { flushSave(); if (sync.dirty) push(); });
+
+  // Sends the text to the server, if it keeps notes and is reachable; otherwise
+  // it stays marked as changed and goes when the server next sends its copy.
+  function push() {
+    clearTimeout(sync.timer);
+    sync.timer = 0;
+    if (!sync.server || !state.connected || !sync.dirty) return;
+    const text = el.text.value;
+    if (send({ t: 'notesSet', text, cid: sync.cid })) sync.inflight = text;
+  }
+
+  function setRev(rev) {
+    sync.rev = rev;
+    sync.synced = true;
+    storage(KEY_REV, String(rev));
+  }
+  function setClean() {
+    sync.dirty = false;
+    storage(KEY_DIRTY, '');
+  }
+
+  // Text from the server, keeping the caret where it was when the pad is being used.
+  function showText(text) {
+    if (text === el.text.value) return;
+    const focused = document.activeElement === el.text;
+    const a = el.text.selectionStart, b = el.text.selectionEnd;
+    el.text.value = text;
+    if (focused) el.text.setSelectionRange(Math.min(a, text.length), Math.min(b, text.length));
+    flushSave();
+    updateFoot();
+  }
+
+  // { text, rev } on connecting and when another page changed it; { rev, cid, own } answering this page's change.
+  function fromServer(msg) {
+    if (!el.text || !Number.isInteger(msg.rev)) return;
+    if (msg.own) {
+      if (msg.cid !== sync.cid) return;
+      setRev(msg.rev);
+      if (sync.inflight === el.text.value) setClean();
+      sync.inflight = null;
+      return;
+    }
+    if (typeof msg.text !== 'string') return;
+    const local = el.text.value;
+    if (!sync.synced) {
+      // First contact for text written before notes were kept on the server:
+      // nothing of either side is dropped.
+      setRev(msg.rev);
+      if (!local.trim() || local === msg.text) { setClean(); showText(msg.text); return; }
+      if (msg.text.trim()) {
+        showText(`${msg.text.replace(/\s+$/, '')}\n\n${local}`);
+        toast('Notes now follow you on every device; the text from this browser was added to them.', 6000);
+      }
+      changed();
+      push();
+      return;
+    }
+    if (sync.dirty) {
+      // Changed here meanwhile (being typed, or while offline): this page's text goes next and wins.
+      if (local === msg.text) { setRev(msg.rev); setClean(); return; }
+      push();
+      return;
+    }
+    setRev(msg.rev);
+    showText(msg.text);
+  }
+
+  function setServer(on) {
+    sync.server = !!on;
+  }
+
+  // Another tab of this browser changed the notes (only when the server does not keep them).
   window.addEventListener('storage', (e) => {
-    if (!el.text) return;
+    if (!el.text || sync.server) return;
     if (e.key === KEY_TEXT && document.activeElement !== el.text) { el.text.value = e.newValue || ''; updateFoot(); }
   });
 
@@ -232,6 +328,7 @@
     let done = false;
     try { done = document.execCommand('delete'); } catch { /* not supported */ }
     if (!done || el.text.value) el.text.value = '';
+    changed();
     flushSave();
     updateFoot();
   }
@@ -302,14 +399,14 @@
     try { done = document.execCommand('insertText', false, lead + text + trail); } catch { /* not supported */ }
     if (!done) {
       t.setRangeText(lead + text + trail, start, end, 'end');
-      scheduleSave();
     }
+    changed();
     flushSave();
     updateFoot();
   }
 
   // For stt.js: dictation goes into the pad while it is open (not rolled up) and on screen.
-  window.Notes = { isOpen: () => mode === 'open' && onScreen && !el.panel.hidden, insert };
+  window.Notes = { isOpen: () => mode === 'open' && onScreen && !el.panel.hidden, insert, fromServer, setServer };
 
   build();
   // What is on screen changed (app.js), or one of the full-page views opened or closed.
