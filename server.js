@@ -480,7 +480,8 @@ function syncClient(client) {
 
 terminals.on('changed', () => { for (const c of clients) syncClient(c); });
 // Output in a tab a page is not attached to: once it has had a moment to settle, the page gets the fingerprint of its
-// screen and compares it with what it last showed (the yellow dot), without loading the tab.
+// screen and compares it with what it last showed (the yellow dot), without loading the tab. A screen that now reads
+// differently also moves the tab's changedAt, which every page hears about (sorting by most recently changed).
 const actTimers = new Map();
 terminals.on('activity', (id) => {
   if (actTimers.has(id)) return;
@@ -490,6 +491,8 @@ terminals.on('activity', (id) => {
     if (!tab) return;
     const h = tab.screenHash();
     for (const c of clients) if (!c.subs.has(id)) send(c, { t: 'act', id, h });
+    // Every page, for sorting the sidebar by most recently changed.
+    if (tab.noteChange(h)) for (const c of clients) send(c, { t: 'touched', id, at: tab.changedAt });
   }, 1200));
 });
 
@@ -500,7 +503,7 @@ function onConnection(ws, session) {
   clients.add(client);
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
-  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, maxTabs: MAX_TABS, features: ['sessions', 'files', 'view', 'vnc', 'vnc-target', 'ssh', 'layouts', 'notes', ...(vnc.isUp() ? ['vnc-local'] : []), ...(vstream.info().ok ? ['vnc-fluid:' + vstream.info().codecs.join('+') + (vstream.info().nvenc ? '+gpu' : '')] : [])] });
+  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, maxTabs: MAX_TABS, features: ['sessions', 'files', 'view', 'vnc', 'vnc-target', 'ssh', 'layouts', 'notes', 'changed-at', ...(vnc.isUp() ? ['vnc-local'] : []), ...(vstream.info().ok ? ['vnc-fluid:' + vstream.info().codecs.join('+') + (vstream.info().nvenc ? '+gpu' : '')] : [])] });
   syncClient(client);
   send(client, { t: 'layouts', list: layouts.list() });
   const note = notes.get(client.email);

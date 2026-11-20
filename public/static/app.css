@@ -754,14 +754,39 @@ body.resizing #main { pointer-events: none; }
 #panebars[hidden], #splitters[hidden] { display: none; }
 
 /* ---------- finding a session ---------- */
-.search { padding: 0 10px 6px; }
+.search { display: flex; gap: 6px; padding: 0 10px 6px; }
 .search[hidden] { display: none; }
 .search input {
-  width: 100%; padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px;
+  flex: 1; min-width: 0; padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px;
   background: var(--panel-2); color: var(--text); font: inherit; font-size: 13px; outline: none;
 }
 .search input:focus { border-color: var(--accent); }
 .tab .name mark { background: none; color: var(--accent); font-weight: 600; }
+.sort-btn {
+  flex: none; display: grid; place-items: center; width: 30px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--panel-2); color: var(--muted); cursor: pointer;
+}
+.sort-btn:hover, .sort-btn:focus-visible, .sort-btn[aria-expanded="true"] { border-color: var(--accent); color: var(--text); outline: none; }
+.sort-btn.on { color: var(--accent); }
+/* The list is sorted while the find box is closed: a dot on the Find button. */
+#search-btn.sorted { position: relative; }
+#search-btn.sorted::after {
+  content: ""; position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+}
+.sort-menu {
+  position: fixed; z-index: 60; min-width: 220px; max-width: calc(100vw - 16px); padding: 4px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--panel); color: var(--text); box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
+}
+.sort-menu button {
+  display: grid; grid-template-columns: 16px 1fr auto; align-items: center; gap: 6px; width: 100%; padding: 6px 8px;
+  border: 0; border-radius: 5px; background: none; color: inherit; font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+}
+.sort-menu button:hover:not(:disabled), .sort-menu button:focus-visible { background: var(--panel-2); outline: none; }
+.sort-menu button:disabled { opacity: .45; cursor: default; }
+.sort-check { color: var(--accent); visibility: hidden; }
+.sort-menu [aria-checked="true"] .sort-check { visibility: visible; }
+.sort-hint { color: var(--muted); font-size: 11.5px; }
+.sort-sep { height: 1px; margin: 4px 6px; background: var(--line); }
 .search-none { padding: 10px 12px; color: var(--muted); font-size: 13px; list-style: none; }
 
 /* ---------- SSH connections ---------- */

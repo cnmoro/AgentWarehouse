@@ -189,6 +189,7 @@ function connect() {
       case 'created': activate(msg.id); break;
       case 'error': toast(msg.msg); break;
       case 'notes': if (window.Notes) window.Notes.fromServer(msg); break;
+      case 'touched': onTouched(msg); break;
       case 'layouts': state.layouts = Array.isArray(msg.list) ? msg.list : []; renderLayouts(); break;
       case 'pong': break;
       case 'histInfo': onHistInfo(msg); break;
@@ -1264,6 +1265,134 @@ searchQ.addEventListener('keydown', (e) => {
   } else if (e.key === 'ArrowDown') { e.preventDefault(); tabsEl.querySelector('.tab')?.focus(); }
 });
 
+// ---- order of the sidebar: as arranged (drag to move), most or least recently changed, or by name. The choice is
+// remembered per browser; dragging only reorders in the arranged order.
+const SORTS = [
+  { id: 'natural', label: 'As arranged', hint: 'Drag to reorder' },
+  { id: 'recent-desc', label: 'Recently changed', hint: 'Newest first', sep: true },
+  { id: 'recent-asc', label: 'Least recently changed', hint: 'Oldest first' },
+  { id: 'name-asc', label: 'Name, A to Z', sep: true },
+  { id: 'name-desc', label: 'Name, Z to A' },
+];
+let sortMode = SORTS.some((o) => o.id === storage('wt.sort')) ? storage('wt.sort') : 'natural';
+const sortBtn = $('#sort-btn');
+const byName = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+const knowsChanges = () => state.tabs.some((t) => Number.isFinite(t.changedAt));
+const changedOf = (g) => tabsOf(g.id).reduce((m, t) => Math.max(m, t.changedAt || 0), 0);
+function sortSessions(list) {
+  const mode = sortMode.startsWith('recent') && !knowsChanges() ? 'natural' : sortMode;
+  if (mode === 'natural') return list;
+  const key = mode.startsWith('recent') ? new Map(list.map((g) => [g.id, changedOf(g)])) : null;
+  const cmp = {
+    'recent-desc': (a, b) => key.get(b.id) - key.get(a.id),
+    'recent-asc': (a, b) => key.get(a.id) - key.get(b.id),
+    'name-asc': (a, b) => byName.compare(a.name, b.name),
+    'name-desc': (a, b) => byName.compare(b.name, a.name),
+  }[mode];
+  return [...list].sort(cmp); // stable: ties keep the arranged order
+}
+function ago(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return 'just now';
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h} h ago`;
+  return `${Math.round(h / 24)} days ago`;
+}
+function updateSortBtn() {
+  const o = SORTS.find((x) => x.id === sortMode);
+  const sorted = sortMode !== 'natural';
+  sortBtn.classList.toggle('on', sorted);
+  sortBtn.title = `Sort sessions: ${o.label}`;
+  sortBtn.setAttribute('aria-label', sortBtn.title);
+  // The list stays sorted with the find box closed: the Find button says so.
+  const find = $('#search-btn');
+  find.classList.toggle('sorted', sorted);
+  find.title = `Find a session (Ctrl+Shift+K)${sorted ? `\nSessions sorted: ${o.label}` : ''}`;
+}
+function setSort(id) {
+  sortMode = id;
+  storage('wt.sort', id);
+  updateSortBtn();
+  renderSidebar();
+}
+// A tab's screen changed (any page's server notice): re-sort once per frame at most, and only when it matters.
+let resortQueued = false;
+function onTouched({ id, at }) {
+  const t = state.tabs.find((x) => x.id === id);
+  if (!t || !Number.isFinite(at)) return;
+  t.changedAt = at;
+  if (!sortMode.startsWith('recent') || resortQueued) return;
+  resortQueued = true;
+  requestAnimationFrame(() => {
+    resortQueued = false;
+    if (!state.renaming && !dragId) renderSidebar();
+  });
+}
+
+let sortMenu = null;
+function closeSortMenu(refocus) {
+  if (!sortMenu) return;
+  sortMenu.remove();
+  sortMenu = null;
+  sortBtn.setAttribute('aria-expanded', 'false');
+  document.removeEventListener('pointerdown', sortOutside, true);
+  window.removeEventListener('resize', closeSortMenuNow);
+  if (refocus) sortBtn.focus();
+}
+const closeSortMenuNow = () => closeSortMenu(false);
+const sortOutside = (e) => { if (!sortMenu.contains(e.target) && !sortBtn.contains(e.target)) closeSortMenu(false); };
+function openSortMenu() {
+  const m = document.createElement('div');
+  m.className = 'sort-menu';
+  m.setAttribute('role', 'menu');
+  m.setAttribute('aria-label', 'Sort sessions');
+  const live = knowsChanges();
+  for (const o of SORTS) {
+    if (o.sep) { const hr = document.createElement('div'); hr.className = 'sort-sep'; hr.setAttribute('role', 'separator'); m.append(hr); }
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('role', 'menuitemradio');
+    b.setAttribute('aria-checked', String(o.id === sortMode));
+    b.tabIndex = -1;
+    b.dataset.id = o.id;
+    const off = o.id.startsWith('recent') && !live;
+    if (off) { b.disabled = true; b.title = 'Needs the server to be restarted with the new version'; }
+    b.innerHTML = '<span class="sort-check" aria-hidden="true">✓</span><span class="sort-label"></span><span class="sort-hint"></span>';
+    b.querySelector('.sort-label').textContent = o.label;
+    b.querySelector('.sort-hint').textContent = o.hint || '';
+    b.onclick = () => { setSort(o.id); closeSortMenu(true); };
+    m.append(b);
+  }
+  m.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    const items = [...m.querySelectorAll('button:not(:disabled)')];
+    const i = items.indexOf(document.activeElement);
+    const to = { ArrowDown: items[(i + 1) % items.length], ArrowUp: items[(i - 1 + items.length) % items.length], Home: items[0], End: items[items.length - 1] }[e.key];
+    if (to) { e.preventDefault(); to.focus(); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeSortMenu(true); }
+    else if (e.key === 'Tab') closeSortMenu(false);
+  });
+  document.body.append(m);
+  // Under the button, right edges lined up, kept on screen.
+  const r = sortBtn.getBoundingClientRect();
+  const w = m.offsetWidth;
+  m.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w))}px`;
+  m.style.top = `${Math.min(r.bottom + 4, window.innerHeight - m.offsetHeight - 8)}px`;
+  sortMenu = m;
+  sortBtn.setAttribute('aria-expanded', 'true');
+  document.addEventListener('pointerdown', sortOutside, true);
+  window.addEventListener('resize', closeSortMenuNow);
+  (m.querySelector('[aria-checked="true"]:not(:disabled)') || m.querySelector('button:not(:disabled)')).focus();
+}
+sortBtn.onclick = () => (sortMenu ? closeSortMenu(true) : openSortMenu());
+sortBtn.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown' && !sortMenu) { e.preventDefault(); openSortMenu(); }
+  else if (e.key === 'Escape') { e.preventDefault(); setSearch(false); focusActive(); }
+});
+updateSortBtn();
+
 function renderSidebar() {
   const hadFocus = tabsEl.contains(document.activeElement) ? document.activeElement.closest('.tab')?.dataset.id : null;
   const current = sessionOf(state.active);
@@ -1289,7 +1418,8 @@ function renderSidebar() {
     const name = document.createElement('span');
     name.className = 'name';
     if (query && g._hits) markName(name, g.name, g._hits); else name.textContent = g.name;
-    name.title = `${g.name}${members.length > 1 ? ` · ${members.length} tabs` : ''}\nDouble-click to rename`;
+    const changed = changedOf(g);
+    name.title = `${g.name}${members.length > 1 ? ` · ${members.length} tabs` : ''}${changed ? `\nChanged ${ago(changed)}` : ''}\nDouble-click to rename`;
     li.append(dot, name);
     if (members.length > 1) {
       const count = document.createElement('span');
@@ -1318,10 +1448,11 @@ function renderSidebar() {
     tabsEl.appendChild(li);
     if (hadFocus === g.id) li.focus();
   };
-  const all = sessions();
+  const all = sortSessions(sessions());
   if (query) {
-    // Matches, best first, hidden sessions included.
-    const found = all.map((g) => ({ g, m: fuzzy(g.name, query) })).filter((x) => x.m).sort((a, b) => b.m.score - a.m.score);
+    // Matches, hidden sessions included: best first, or in the chosen order.
+    const found = all.map((g) => ({ g, m: fuzzy(g.name, query) })).filter((x) => x.m);
+    if (sortMode === 'natural') found.sort((a, b) => b.m.score - a.m.score);
     for (const { g, m } of found) { g._hits = m.hits; addItem(g, hiddenIds.has(g.id)); delete g._hits; }
     if (!found.length) {
       const none = document.createElement('li');
@@ -1372,7 +1503,7 @@ function setHidden(gid, hide) {
   if (hide) {
     // Leaving the session on screen: move to its neighbour in the visible list.
     if (sessionOf(state.active) === gid) {
-      const vis = sessions().filter((g) => !hiddenIds.has(g.id));
+      const vis = sortSessions(sessions()).filter((g) => !hiddenIds.has(g.id));
       const i = vis.findIndex((g) => g.id === gid);
       const next = vis[i + 1] || vis[i - 1];
       if (next) activateSession(next.id);
@@ -1627,7 +1758,7 @@ function addDrag(li) {
     clearDropMarks(tabsEl);
   });
   li.addEventListener('dragover', (e) => {
-    if (!dragId || dragId === li.dataset.id) return;
+    if (!dragId || dragId === li.dataset.id || sortMode !== 'natural') return;
     e.preventDefault();
     e.stopPropagation();
     clearDropMarks(tabsEl);
@@ -1636,15 +1767,15 @@ function addDrag(li) {
   li.addEventListener('drop', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    if (!dragId || dragId === li.dataset.id) return;
+    if (!dragId || dragId === li.dataset.id || sortMode !== 'natural') return;
     moveSession(li.dataset.id, dropPosition(li, e));
   });
 }
 // Dropping on the empty space below the last session moves it to the end.
-tabsEl.addEventListener('dragover', (e) => { if (dragId) e.preventDefault(); });
+tabsEl.addEventListener('dragover', (e) => { if (dragId && sortMode === 'natural') e.preventDefault(); });
 tabsEl.addEventListener('drop', (e) => {
   e.preventDefault();
-  if (dragId) moveSession(null, 'end');
+  if (dragId && sortMode === 'natural') moveSession(null, 'end');
 });
 
 let chipDragId = null;

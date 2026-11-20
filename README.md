@@ -172,6 +172,8 @@ When two browsers show the same terminal, the one you used last sets its size, a
 
 The magnifier in the sidebar (or Ctrl+Shift+K) finds a session by name: type some of its letters in order ("wf" finds "web-frontend"); Enter opens the best match, Esc closes the search. Hidden sessions are searched too.
 
+The button next to the search box sorts the sidebar: as arranged (the default, the only order where dragging moves sessions), most or least recently changed, or by name (A to Z or Z to A, numbers in numeric order). The order is remembered per browser and stays while the search box is closed (a dot on the Find button says the list is sorted). "Changed" means the session's screen changed, whether from output or from typing; the server keeps the time in `tabs.json`, so the order is the same on every device and survives a restart (the prompts the shells print while they start count only after someone types). Hover over a session to see when it last changed.
+
 ### SSH connections
 
 The SSH button in the sidebar opens a list of saved connections (name, host,
