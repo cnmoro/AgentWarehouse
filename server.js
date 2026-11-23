@@ -481,7 +481,8 @@ function syncClient(client) {
 terminals.on('changed', () => { for (const c of clients) syncClient(c); });
 // Output in a tab a page is not attached to: once it has had a moment to settle, the page gets the fingerprint of its
 // screen and compares it with what it last showed (the yellow dot), without loading the tab. A screen that now reads
-// differently also moves the tab's changedAt, which every page hears about (sorting by most recently changed).
+// differently also moves the tab's changedAt (and activeSince when it starts a burst), which every page hears about
+// (sorting by most recently changed).
 const actTimers = new Map();
 terminals.on('activity', (id) => {
   if (actTimers.has(id)) return;
@@ -492,7 +493,7 @@ terminals.on('activity', (id) => {
     const h = tab.screenHash();
     for (const c of clients) if (!c.subs.has(id)) send(c, { t: 'act', id, h });
     // Every page, for sorting the sidebar by most recently changed.
-    if (tab.noteChange(h)) for (const c of clients) send(c, { t: 'touched', id, at: tab.changedAt });
+    if (tab.noteChange(h)) for (const c of clients) send(c, { t: 'touched', id, at: tab.changedAt, since: tab.activeSince });
   }, 1200));
 });
 

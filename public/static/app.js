@@ -1279,10 +1279,13 @@ const sortBtn = $('#sort-btn');
 const byName = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 const knowsChanges = () => state.tabs.some((t) => Number.isFinite(t.changedAt));
 const changedOf = (g) => tabsOf(g.id).reduce((m, t) => Math.max(m, t.changedAt || 0), 0);
+// Sort key: when the session's latest burst of changes began (the server's activeSince), so sessions that keep
+// redrawing hold their places; a server without it sorts by the last change.
+const sinceOf = (g) => tabsOf(g.id).reduce((m, t) => Math.max(m, t.activeSince || t.changedAt || 0), 0);
 function sortSessions(list) {
   const mode = sortMode.startsWith('recent') && !knowsChanges() ? 'natural' : sortMode;
   if (mode === 'natural') return list;
-  const key = mode.startsWith('recent') ? new Map(list.map((g) => [g.id, changedOf(g)])) : null;
+  const key = mode.startsWith('recent') ? new Map(list.map((g) => [g.id, sinceOf(g)])) : null;
   const cmp = {
     'recent-desc': (a, b) => key.get(b.id) - key.get(a.id),
     'recent-asc': (a, b) => key.get(a.id) - key.get(b.id),
@@ -1317,19 +1320,37 @@ function setSort(id) {
   updateSortBtn();
   renderSidebar();
 }
-// A tab's screen changed (any page's server notice): re-sort once per frame at most, and only when it matters.
+// A tab's screen changed (any page's server notice): re-sort once per frame at most, and only when its sort key
+// moved (a new burst of changes, not every redraw of a busy tab). While the pointer is over the sidebar the order
+// holds still, so a row does not slide away from the click; it catches up when the pointer leaves.
 let resortQueued = false;
-function onTouched({ id, at }) {
+let resortHeld = false;
+function onTouched({ id, at, since }) {
   const t = state.tabs.find((x) => x.id === id);
   if (!t || !Number.isFinite(at)) return;
   t.changedAt = at;
-  if (!sortMode.startsWith('recent') || resortQueued) return;
+  const moved = Number.isFinite(since) ? since !== t.activeSince : true;
+  if (Number.isFinite(since)) t.activeSince = since;
+  if (!moved || !sortMode.startsWith('recent')) return;
+  queueResort();
+}
+function queueResort() {
+  if (sidebarHovered()) { resortHeld = true; return; }
+  if (resortQueued) return;
   resortQueued = true;
   requestAnimationFrame(() => {
     resortQueued = false;
     if (!state.renaming && !dragId) renderSidebar();
   });
 }
+// Only a mouse holds the order: on a touch screen :hover sticks after a tap and would freeze the list.
+let mouseOverSidebar = false;
+const sidebarHovered = () => mouseOverSidebar;
+tabsEl.addEventListener('pointerenter', (e) => { mouseOverSidebar = e.pointerType === 'mouse'; });
+tabsEl.addEventListener('pointerleave', () => {
+  mouseOverSidebar = false;
+  if (resortHeld) { resortHeld = false; queueResort(); }
+});
 
 let sortMenu = null;
 function closeSortMenu(refocus) {
