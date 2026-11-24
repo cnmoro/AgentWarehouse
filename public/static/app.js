@@ -403,10 +403,48 @@ function createView(id) {
   term.onScroll(() => updateHistPill(id));
 
   addTouchScroll(el, term);
+  addFastWheel(el, term);
 
   const view = { id, term, fit, el, webgl: null, attached: false, seq: 0, ackPending: 0, ackTimer: null, actTimer: null, actSince: 0 };
   state.views.set(id, view);
   return view;
+}
+
+// Fast scroll: while a key is held (Caps Lock unless localStorage wt.fastScrollKey names another key by its code,
+// e.g. "AltRight"), the mouse wheel moves FAST_SCROLL times as far, in the terminal and in the full history.
+const FAST_SCROLL = 5;
+const fastKey = storage('wt.fastScrollKey') || 'CapsLock';
+let fastHeld = false;
+// xterm scrolls its history smoothly by itself, and only takes a faster speed as an option.
+function setFast(on) {
+  if (fastHeld === on) return;
+  fastHeld = on;
+  for (const v of state.views.values()) v.term.options.scrollSensitivity = on ? FAST_SCROLL : 1;
+}
+window.addEventListener('keydown', (e) => { if (e.code === fastKey) setFast(true); }, true);
+window.addEventListener('keyup', (e) => { if (e.code === fastKey) setFast(false); }, true);
+// A key let go while the page had no focus never reports its keyup.
+window.addEventListener('blur', () => setFast(false));
+const fastCopies = new WeakSet(); // the wheel events made up below, which pass through untouched
+
+// Where a program has the wheel (claude, vim, less, tmux), it gets each wheel step FAST_SCROLL times over, as arrow
+// keys or mouse reports.
+function addFastWheel(el, term) {
+  if (fastHeld) term.options.scrollSensitivity = FAST_SCROLL;
+  term.attachCustomWheelEventHandler((e) => {
+    if (!fastHeld || fastCopies.has(e) || e.ctrlKey || !e.deltaY) return true;
+    if (term.buffer.active.type === 'normal' && term.modes.mouseTrackingMode === 'none') return true; // scrollSensitivity
+    const target = el.querySelector('.xterm-screen') || el;
+    for (let i = 1; i < FAST_SCROLL; i++) {
+      const copy = new WheelEvent('wheel', {
+        deltaX: 0, deltaY: e.deltaY, deltaMode: e.deltaMode, clientX: e.clientX, clientY: e.clientY,
+        shiftKey: e.shiftKey, altKey: e.altKey, metaKey: e.metaKey, bubbles: true, cancelable: true,
+      });
+      fastCopies.add(copy);
+      target.dispatchEvent(copy);
+    }
+    return true;
+  });
 }
 
 // Touch on the terminal.
@@ -2862,6 +2900,12 @@ function histSearch(dir) {
   send({ t: 'histSearch', id: hist.id, q, from: Math.max(0, from), dir, seq: hist.searchSeq });
 }
 
+// Fast scroll in the full history too: the browser scrolls one step, this adds the rest.
+histEls.scroll.addEventListener('wheel', (e) => {
+  if (!fastHeld || e.ctrlKey || !e.deltaY) return;
+  const px = e.deltaMode === 1 ? e.deltaY * hist.rowH : e.deltaMode === 2 ? e.deltaY * histEls.scroll.clientHeight : e.deltaY;
+  histEls.scroll.scrollTop += px * (FAST_SCROLL - 1);
+}, { passive: true });
 histEls.scroll.addEventListener('scroll', () => {
   hist.stick = histAtBottom();
   requestAnimationFrame(histRender);

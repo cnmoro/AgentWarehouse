@@ -153,6 +153,7 @@ The sidebar lists sessions. Each session has one or more tabs, shown along the t
 | Copy | Select with the mouse, then **Ctrl+C**. With nothing selected, Ctrl+C sends an interrupt as usual. **Ctrl+Shift+C** always copies. |
 | Paste | **Ctrl+V** or **Ctrl+Shift+V**. Bracketed paste is used when the program supports it. |
 | Font size | **Ctrl +**, **Ctrl −**, **Ctrl 0**, or A−/A+ in the sidebar footer |
+| Fast scroll | Hold **Caps Lock** while turning the mouse wheel: it moves 5 times as far, in the scrollback, in programs that take the wheel (claude, less, vim) and in the full history. Pressing Caps Lock still toggles it, as always. Another key can be set per browser with `localStorage.setItem('wt.fastScrollKey', 'AltRight')` (a [key code](https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_code_values)). |
 | Full history | **Ctrl+Shift+H**, the ⏱ button on a tab, or the button that appears at the top of the scrollback |
 | Hide sidebar | « in the sidebar header. It collapses to a narrow strip; ☰ brings it back. |
 
