@@ -148,6 +148,7 @@ The sidebar lists sessions. Each session has one or more tabs, shown along the t
 | New tab | `+` at the end of the tabs. It opens in the folder of the session's first tab. |
 | Rename | Double-click a session or tab name, the ✎ button, or F2. Enter saves, Esc cancels. |
 | Reorder | Drag sessions in the sidebar, or tabs along the top. |
+| Folders | Drop a session on the middle of another to put both in a new folder, then type its name. Drop more sessions on the folder to add them; drop a session above or below a session outside the folder (or on the empty space at the end) to take it out. Click a folder to open or close it, double-click (or F2) to rename it, and ⇱ (or Delete) to ungroup it (its sessions stay). Folders are kept on the server, like the sessions, so every device shows the same ones; which are open is remembered per browser. |
 | Close | ✕ or Delete; middle-click also closes a tab. Closing a session closes all its tabs. This kills the shells and anything running in them. |
 | Move between tabs | Click. From the keyboard: **Ctrl+Shift+E** jumps to the tab list, then arrow keys and Enter; Esc goes back to the terminal. |
 | Copy | Select with the mouse, then **Ctrl+C**. With nothing selected, Ctrl+C sends an interrupt as usual. **Ctrl+Shift+C** always copies. |

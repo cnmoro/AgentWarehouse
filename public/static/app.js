@@ -181,7 +181,7 @@ function connect() {
         // Older servers keep no notes: the pad keeps its text in the browser only.
         if (window.Notes) window.Notes.setServer(Array.isArray(msg.features) && msg.features.includes('notes'));
         break;
-      case 'list': onList(msg.tabs, msg.groups); break;
+      case 'list': onList(msg.tabs, msg.groups, msg.folders); break;
       case 'snap': onSnapshot(msg); break;
       case 'out': onOutput(msg.id, msg.d); break;
       case 'size': onSize(msg); break;
@@ -1014,15 +1014,17 @@ function activate(id) {
   if (mobile.matches) setSidebar(false);
 }
 
-function onList(tabs, groups) {
+function onList(tabs, groups, folders) {
   const oldSession = sessionOf(state.active);
   const oldSessionIndex = sessions().findIndex((g) => g.id === oldSession);
   const oldTabIndex = tabsOf(oldSession).findIndex((t) => t.id === state.active);
   state.tabs = tabs;
   state.groups = Array.isArray(groups) ? groups : null;
+  state.folders = Array.isArray(folders) && state.groups ? folders : null;
   const ids = new Set(tabs.map((t) => t.id));
   // What is being renamed was closed elsewhere: drop the input.
-  if (state.renaming && !ids.has(state.renaming) && !sessions().some((g) => g.id === state.renaming)) state.renaming = null;
+  if (state.renaming && !ids.has(state.renaming) && !sessions().some((g) => g.id === state.renaming)
+    && !(state.folders || []).some((f) => f.id === state.renaming)) state.renaming = null;
   // A pane whose terminal is gone closes (the last terminal pane waits for its neighbour).
   for (const leaf of tabLeaves()) {
     if (leaf.tabId && !ids.has(leaf.tabId) && tabLeaves().length > 1) removeLeaf(leaf);
@@ -1378,7 +1380,7 @@ function queueResort() {
   resortQueued = true;
   requestAnimationFrame(() => {
     resortQueued = false;
-    if (!state.renaming && !dragId) renderSidebar();
+    if (!state.renaming && !dragId && !dragFolder) renderSidebar();
   });
 }
 // Only a mouse holds the order: on a touch screen :hover sticks after a tap and would freeze the list.
@@ -1452,8 +1454,104 @@ sortBtn.addEventListener('keydown', (e) => {
 });
 updateSortBtn();
 
+// ---- folders: named groups of sessions in the sidebar (drop a session on the middle of another to start one).
+// Kept by the server, so every device shows the same ones; whether each is open is remembered per browser.
+const FOLDER_ICON = '<svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M2 5.5A1.5 1.5 0 0 1 3.5 4h4l1.6 1.8h7.4A1.5 1.5 0 0 1 18 7.3v7.2a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 2 14.5z"/></svg>';
+const closedFolders = new Set(JSON.parse(storage('wt.foldersClosed') || '[]'));
+const folderOpen = (fid) => !closedFolders.has(fid);
+function setFolderOpen(fid, open) {
+  if (open) closedFolders.delete(fid); else closedFolders.add(fid);
+  // Folders that no longer exist are forgotten.
+  const live = new Set((state.folders || []).map((f) => f.id));
+  for (const id of [...closedFolders]) if (!live.has(id)) closedFolders.delete(id);
+  storage('wt.foldersClosed', JSON.stringify([...closedFolders]));
+  renderSidebar();
+}
+const foldersOn = () => !!state.folders;
+const folderById = (fid) => (state.folders || []).find((f) => f.id === fid) || null;
+const folderOf = (g) => (g && g.folder && folderById(g.folder) ? g.folder : null);
+const membersOf = (fid) => sessions().filter((g) => folderOf(g) === fid);
+
+// The sidebar's top level: sessions, and folders where their first session (in the order shown) would be.
+// Sorted by name, a folder goes by its own name.
+function sidebarEntries(list) {
+  const out = [];
+  const byFolder = new Map();
+  for (const g of list) {
+    const fid = folderOf(g);
+    if (!fid) { out.push({ g, name: g.name }); continue; }
+    if (!byFolder.has(fid)) {
+      const e = { folder: folderById(fid), members: [], name: folderById(fid).name };
+      byFolder.set(fid, e);
+      out.push(e);
+    }
+    byFolder.get(fid).members.push(g);
+  }
+  if (sortMode === 'name-asc') out.sort((a, b) => byName.compare(a.name, b.name));
+  if (sortMode === 'name-desc') out.sort((a, b) => byName.compare(b.name, a.name));
+  return out;
+}
+
+function addFolderHead(f, members, open, current, hadFolder) {
+  const li = document.createElement('li');
+  li.className = 'folder';
+  li.dataset.folder = f.id;
+  li.dataset.id = f.id; // for the rename input
+  li.tabIndex = -1;
+  li.draggable = true;
+  li.setAttribute('role', 'treeitem');
+  li.setAttribute('aria-expanded', String(open));
+  const ids = new Set(members.map((g) => g.id));
+  if (!open && ids.has(current)) li.classList.add('has-active');
+  if (!open && members.some((g) => tabsOf(g.id).some((t) => state.activity.has(t.id)))) li.classList.add('activity');
+  const chev = document.createElement('span');
+  chev.className = 'chev';
+  chev.setAttribute('aria-hidden', 'true');
+  chev.textContent = open ? '▾' : '▸';
+  const icon = document.createElement('span');
+  icon.className = 'folder-icon';
+  icon.innerHTML = FOLDER_ICON;
+  const name = document.createElement('span');
+  name.className = 'name';
+  name.textContent = f.name;
+  name.title = `${f.name} · ${members.length} session${members.length === 1 ? '' : 's'}\nClick to ${open ? 'close' : 'open'}, double-click to rename`;
+  const count = document.createElement('span');
+  count.className = 'count';
+  count.textContent = String(members.length);
+  const dot = document.createElement('span');
+  dot.className = 'dot';
+  dot.setAttribute('aria-hidden', 'true');
+  const actions = document.createElement('span');
+  actions.className = 'actions';
+  actions.append(
+    actionButton('✎', 'Rename folder (F2)', `Rename folder ${f.name}`, () => renameFolder(f.id)),
+    actionButton('⇱', 'Ungroup: the sessions stay, the folder goes (Delete)', `Ungroup ${f.name}`, () => ungroupFolder(f.id)),
+  );
+  li.append(chev, icon, name, dot, count, actions);
+  li.onclick = () => setFolderOpen(f.id, !open);
+  name.ondblclick = (e) => { e.stopPropagation(); renameFolder(f.id); };
+  addDrag(li);
+  tabsEl.appendChild(li);
+  if (hadFolder === f.id) li.focus();
+}
+
+function renameFolder(fid) {
+  const li = tabsEl.querySelector(`.folder[data-folder="${CSS.escape(fid)}"]`);
+  const f = folderById(fid);
+  if (f) inlineRename(li, f.name, (name) => { f.name = name; send({ t: 'renameFolder', id: fid, name }); });
+}
+
+function ungroupFolder(fid) {
+  const ids = membersOf(fid).map((g) => g.id);
+  for (const g of state.groups) if (ids.includes(g.id)) g.folder = null;
+  state.folders = state.folders.filter((f) => f.id !== fid);
+  send({ t: 'setFolder', ids, folder: null });
+  renderTabs();
+}
+
 function renderSidebar() {
   const hadFocus = tabsEl.contains(document.activeElement) ? document.activeElement.closest('.tab')?.dataset.id : null;
+  const hadFolder = tabsEl.contains(document.activeElement) ? document.activeElement.closest('.folder')?.dataset.folder : null;
   const current = sessionOf(state.active);
   tabsEl.textContent = '';
   const addItem = (g, hidden) => {
@@ -1521,7 +1619,12 @@ function renderSidebar() {
     }
     return;
   }
-  all.filter((g) => !hiddenIds.has(g.id)).forEach((g) => addItem(g, false));
+  for (const e of sidebarEntries(all.filter((g) => !hiddenIds.has(g.id)))) {
+    if (!e.folder) { addItem(e.g, false); continue; }
+    const open = folderOpen(e.folder.id);
+    addFolderHead(e.folder, e.members, open, current, hadFolder);
+    if (open) for (const g of e.members) { addItem(g, false); tabsEl.lastChild.classList.add('in-folder'); }
+  }
   const hid = all.filter((g) => hiddenIds.has(g.id));
   if (hid.length) {
     // The section opens by itself while the session on screen is in it.
@@ -1656,9 +1759,9 @@ function closeSession(gid, returnFocus) {
 
 // Keyboard use of the session list: arrows move, Enter opens, F2 renames, Delete closes.
 tabsEl.addEventListener('keydown', (e) => {
-  const li = e.target.closest?.('.tab');
+  const li = e.target.closest?.('.tab, .folder');
   if (!li || e.target.tagName === 'INPUT') return;
-  const items = [...tabsEl.querySelectorAll('.tab')];
+  const items = [...tabsEl.querySelectorAll('.tab, .folder')];
   const i = items.indexOf(li);
   const target = {
     ArrowDown: items[(i + 1) % items.length],
@@ -1666,10 +1769,20 @@ tabsEl.addEventListener('keydown', (e) => {
     Home: items[0],
     End: items[items.length - 1],
   }[e.key];
+  const fid = li.dataset.folder;
   if (target) {
     items.forEach((x) => { x.tabIndex = -1; });
     target.tabIndex = 0;
     target.focus();
+  } else if (fid) {
+    // A folder: Enter, Space and the side arrows open and close it, F2 renames, Delete ungroups.
+    if (e.key === 'Enter' || e.key === ' ') setFolderOpen(fid, !folderOpen(fid));
+    else if (e.key === 'ArrowRight') setFolderOpen(fid, true);
+    else if (e.key === 'ArrowLeft') setFolderOpen(fid, false);
+    else if (e.key === 'F2') renameFolder(fid);
+    else if (e.key === 'Delete') ungroupFolder(fid);
+    else if (e.key === 'Escape') focusActive();
+    else return;
   } else if (e.key === 'Enter' || e.key === ' ') {
     activateSession(li.dataset.id);
   } else if (e.key === 'F2') {
@@ -1777,34 +1890,104 @@ function renameTab(id) {
   if (t) inlineRename(chip, t.name, (name) => { t.name = name; send({ t: 'rename', id, name }); });
 }
 
-// ---- drag to reorder: sessions up and down the sidebar, tabs along the strip
+// ---- drag to reorder: sessions up and down the sidebar (and into folders), tabs along the strip
 
-let dragId = null;
+let dragId = null;     // a session being dragged
+let dragFolder = null; // or a folder (it moves with its sessions)
 function clearDropMarks(root) {
-  root.querySelectorAll('.drop-before, .drop-after').forEach((x) => x.classList.remove('drop-before', 'drop-after'));
+  root.querySelectorAll('.drop-before, .drop-after, .drop-into').forEach((x) => x.classList.remove('drop-before', 'drop-after', 'drop-into'));
 }
 function dropPosition(el, e, horizontal) {
   const r = el.getBoundingClientRect();
   return (horizontal ? e.clientX < r.left + r.width / 2 : e.clientY < r.top + r.height / 2) ? 'before' : 'after';
 }
-function moveSession(targetId, where) {
-  const ids = sessions().map((g) => g.id).filter((id) => id !== dragId);
-  const idx = targetId ? ids.indexOf(targetId) + (where === 'after' ? 1 : 0) : ids.length;
-  ids.splice(idx, 0, dragId);
-  if (hasSessions()) {
-    state.groups.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
-    send({ t: 'reorderGroups', ids });
-  } else {
-    state.tabs.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
-    send({ t: 'reorder', ids });
+// Where a drop on a sidebar row lands: 'before', 'after', 'into' (the middle of a session makes a folder of the two,
+// a folder takes the session in), or null. Only 'into' while the list is sorted.
+function dropZone(li, e) {
+  const target = li.dataset.folder ? { folder: li.dataset.folder } : { id: li.dataset.id };
+  if (dragId && dragId === target.id) return null;
+  if (dragFolder && (dragFolder === target.folder || (target.id && folderOf(sessions().find((g) => g.id === target.id)) === dragFolder))) return null;
+  const r = li.getBoundingClientRect();
+  const y = (e.clientY - r.top) / r.height;
+  const canInto = foldersOn() && dragId && !(target.folder && folderOf(sessions().find((g) => g.id === dragId)) === target.folder);
+  if (canInto && (target.folder ? y >= 0.3 : y > 0.25 && y < 0.75)) return 'into';
+  if (sortMode !== 'natural') return null;
+  return y < 0.5 ? 'before' : 'after';
+}
+
+// The new order of the sessions and the folder each one is in: applied here at once, then sent to the server.
+function arrange(order, moves, newFolder) {
+  if (!hasSessions()) {
+    state.tabs.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+    send({ t: 'reorder', ids: order });
+    renderTabs();
+    return;
   }
+  state.groups.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+  if (newFolder) state.folders.push(newFolder);
+  // The moves all go to one folder (or out of folders): one message, order included, so the server changes both
+  // at once and the list never shows the one without the other.
+  const ids = [];
+  let fid = null;
+  for (const [gid, to] of moves) {
+    const g = state.groups.find((x) => x.id === gid);
+    if (!g || (g.folder || null) === to) continue;
+    g.folder = to;
+    fid = to;
+    ids.push(gid);
+  }
+  if (ids.length) send({ t: 'setFolder', ids, folder: fid, name: newFolder ? newFolder.name : undefined, order });
+  else send({ t: 'reorderGroups', ids: order });
+  if (state.folders) state.folders = state.folders.filter((f) => state.groups.some((g) => g.folder === f.id));
   renderTabs();
 }
+
+// Drop the dragged session or folder on a row (`li`) at `zone`, or at the end of the list (li null).
+function sidebarDrop(li, zone) {
+  const order = sessions().map((g) => g.id);
+  const moving = dragFolder ? membersOf(dragFolder).map((g) => g.id) : [dragId];
+  const rest = order.filter((id) => !moving.includes(id));
+  const put = (i) => { rest.splice(i, 0, ...moving); return rest; };
+  const lastOf = (fid) => Math.max(...membersOf(fid).filter((g) => !moving.includes(g.id)).map((g) => rest.indexOf(g.id)));
+  const firstOf = (fid) => Math.min(...membersOf(fid).filter((g) => !moving.includes(g.id)).map((g) => rest.indexOf(g.id)));
+  if (!li) { arrange(put(rest.length), dragFolder ? [] : [[dragId, null]]); return; }
+  const tf = li.dataset.folder || null;           // dropped on a folder row
+  const tg = tf ? null : sessions().find((g) => g.id === li.dataset.id);
+  const tgFolder = tg ? folderOf(tg) : null;      // the folder of the session dropped on
+  if (dragFolder) {
+    // A folder moves as a block, next to the row's top-level entry (a folder of its own when dropped on a member).
+    const anchor = tf || tgFolder;
+    if (anchor) arrange(put(zone === 'before' ? firstOf(anchor) : lastOf(anchor) + 1), []);
+    else arrange(put(rest.indexOf(tg.id) + (zone === 'after' ? 1 : 0)), []);
+    return;
+  }
+  if (zone === 'into' && tf) { arrange(put(lastOf(tf) + 1), [[dragId, tf]]); setFolderOpen(tf, true); return; }
+  if (zone === 'into' && tgFolder) { arrange(put(rest.indexOf(tg.id) + 1), [[dragId, tgFolder]]); return; }
+  if (zone === 'into') {
+    const f = { id: [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join(''), name: 'New folder' };
+    arrange(put(rest.indexOf(tg.id) + 1), [[tg.id, f.id], [dragId, f.id]], f);
+    setFolderOpen(f.id, true);
+    renameFolder(f.id); // name it right away
+    return;
+  }
+  if (tf) { // before a folder, or after it, at the top level
+    arrange(put(zone === 'before' ? firstOf(tf) : lastOf(tf) + 1), [[dragId, null]]);
+    return;
+  }
+  // Next to a session: in its folder, or at the top level if it has none.
+  arrange(put(rest.indexOf(tg.id) + (zone === 'after' ? 1 : 0)), [[dragId, tgFolder]]);
+}
+
 function addDrag(li) {
   li.addEventListener('dragstart', (e) => {
-    dragId = li.dataset.id;
-    li.classList.add('dragging');
     e.dataTransfer.effectAllowed = 'move';
+    li.classList.add('dragging');
+    if (li.dataset.folder) {
+      dragFolder = li.dataset.folder;
+      e.dataTransfer.setData('text/plain', li.dataset.folder);
+      return;
+    }
+    dragId = li.dataset.id;
     e.dataTransfer.setData('text/plain', li.dataset.id);
     // A session can be dropped on the screen: its tab in use goes there.
     const gid = li.dataset.id;
@@ -1813,28 +1996,34 @@ function addDrag(li) {
   });
   li.addEventListener('dragend', () => {
     dragId = null;
+    dragFolder = null;
     li.classList.remove('dragging');
     clearDropMarks(tabsEl);
   });
   li.addEventListener('dragover', (e) => {
-    if (!dragId || dragId === li.dataset.id || sortMode !== 'natural') return;
+    if (!dragId && !dragFolder) return;
+    const zone = dropZone(li, e);
+    e.stopPropagation(); // not the list's "move to the end" either
+    if (!zone) return;
     e.preventDefault();
     e.stopPropagation();
     clearDropMarks(tabsEl);
-    li.classList.add(dropPosition(li, e) === 'before' ? 'drop-before' : 'drop-after');
+    li.classList.add(`drop-${zone}`);
   });
   li.addEventListener('drop', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    if (!dragId || dragId === li.dataset.id || sortMode !== 'natural') return;
-    moveSession(li.dataset.id, dropPosition(li, e));
+    if (!dragId && !dragFolder) return;
+    const zone = dropZone(li, e);
+    clearDropMarks(tabsEl);
+    if (zone) sidebarDrop(li, zone);
   });
 }
-// Dropping on the empty space below the last session moves it to the end.
-tabsEl.addEventListener('dragover', (e) => { if (dragId && sortMode === 'natural') e.preventDefault(); });
+// Dropping on the empty space below the last session moves it to the end (out of any folder).
+tabsEl.addEventListener('dragover', (e) => { if ((dragId || dragFolder) && sortMode === 'natural') e.preventDefault(); });
 tabsEl.addEventListener('drop', (e) => {
   e.preventDefault();
-  if (dragId && sortMode === 'natural') moveSession(null, 'end');
+  if ((dragId || dragFolder) && sortMode === 'natural') sidebarDrop(null);
 });
 
 let chipDragId = null;

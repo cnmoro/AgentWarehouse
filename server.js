@@ -468,7 +468,7 @@ function detach(client, id) {
 }
 
 function syncClient(client) {
-  send(client, { t: 'list', tabs: terminals.list(), groups: terminals.listGroups() });
+  send(client, { t: 'list', tabs: terminals.list(), groups: terminals.listGroups(), folders: terminals.listFolders() });
   for (const [id, handle] of client.subs) {
     if (!terminals.get(id)) {
       handle.close();
@@ -504,7 +504,7 @@ function onConnection(ws, session) {
   clients.add(client);
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
-  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, maxTabs: MAX_TABS, features: ['sessions', 'files', 'view', 'vnc', 'vnc-target', 'ssh', 'layouts', 'notes', 'changed-at', ...(vnc.isUp() ? ['vnc-local'] : []), ...(vstream.info().ok ? ['vnc-fluid:' + vstream.info().codecs.join('+') + (vstream.info().nvenc ? '+gpu' : '')] : [])] });
+  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, maxTabs: MAX_TABS, features: ['sessions', 'files', 'view', 'vnc', 'vnc-target', 'ssh', 'layouts', 'notes', 'changed-at', 'folders', ...(vnc.isUp() ? ['vnc-local'] : []), ...(vstream.info().ok ? ['vnc-fluid:' + vstream.info().codecs.join('+') + (vstream.info().nvenc ? '+gpu' : '')] : [])] });
   syncClient(client);
   send(client, { t: 'layouts', list: layouts.list() });
   const note = notes.get(client.email);
@@ -601,6 +601,15 @@ function handleMessage(client, raw) {
       break;
     case 'closeGroup':
       if (typeof msg.id === 'string') terminals.closeGroup(msg.id);
+      break;
+    case 'setFolder':
+      if (Array.isArray(msg.ids) && (msg.folder === null || typeof msg.folder === 'string')) {
+        terminals.setFolder(msg.ids.filter((x) => typeof x === 'string'), msg.folder, str(msg.name),
+          Array.isArray(msg.order) ? msg.order.filter((x) => typeof x === 'string') : null);
+      }
+      break;
+    case 'renameFolder':
+      if (typeof msg.id === 'string' && str(msg.name)) terminals.renameFolder(msg.id, msg.name);
       break;
     case 'reorderGroups':
       if (Array.isArray(msg.ids)) terminals.reorderGroups(msg.ids.filter((x) => typeof x === 'string'));
