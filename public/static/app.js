@@ -180,6 +180,7 @@ function connect() {
         }
         // Older servers keep no notes: the pad keeps its text in the browser only.
         if (window.Notes) window.Notes.setServer(Array.isArray(msg.features) && msg.features.includes('notes'));
+        if (window.UsagePanel) window.UsagePanel.setAvailable(Array.isArray(msg.features) && msg.features.includes('usage'));
         break;
       case 'list': onList(msg.tabs, msg.groups, msg.folders); break;
       case 'snap': onSnapshot(msg); break;
@@ -189,6 +190,7 @@ function connect() {
       case 'created': activate(msg.id); break;
       case 'error': toast(msg.msg); break;
       case 'notes': if (window.Notes) window.Notes.fromServer(msg); break;
+      case 'usage': if (window.UsagePanel) window.UsagePanel.update(msg); break;
       case 'touched': onTouched(msg); break;
       case 'layouts': state.layouts = Array.isArray(msg.list) ? msg.list : []; renderLayouts(); break;
       case 'pong': break;

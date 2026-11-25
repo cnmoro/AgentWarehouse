@@ -309,6 +309,22 @@ python3.12 -m venv .venv-stt && .venv-stt/bin/pip install soda-stt   # about 200
 
 (`STT_PYTHON` points at another interpreter that has soda-stt.) The engine starts on first use and stops after five idle minutes. Browsers only allow the microphone on **HTTPS** or on `localhost`, so over plain `http://` on the Tailscale or home-network address the button explains that instead of recording; see [HTTPS with `tailscale serve`](#https-with-tailscale-serve-recommended). On a phone, holding the button also works by touch.
 
+### Usage panel
+
+When Claude Code, Codex or OpenCode is signed in for the user the server runs as, a small see-through panel floats
+over the terminals with the limits of each plan: the 5-hour and weekly limits of Claude (and the weekly limit of a
+single model, when the plan has one), the windows of the ChatGPT plan Codex uses, and the 5-hour, weekly and monthly
+meters of OpenCode Go. Each line shows how much is used and when it resets. The server asks every minute while a
+page is open and pushes the figures to every page, so it keeps itself up to date.
+
+Drag it by its title to move it; – shrinks it to a pill with each tool's highest use, and a click on the pill opens it
+again. Where it sits and whether it is shrunk are remembered per browser.
+
+The figures come from the same places the tools' own usage screens read, with the sign-in each tool keeps in the
+home folder (`~/.claude/.credentials.json`, `~/.codex/auth.json`, OpenCode's sign-in in
+`~/.local/share/opencode/opencode.db` or a Go API key in its `auth.json`). Nothing is renewed or written: when a
+sign-in has expired the panel says so, and it comes back the next time that tool runs.
+
 ### Notes
 
 The button with the page icon, next to the microphone, opens a small notepad over the terminals for writing a long prompt before sending it. It is a plain text box (no Markdown): select with the mouse or Shift+arrows, copy, paste, undo, and Enter or Shift+Enter for a new line. The title bar names the terminal it sends to, which is the one that has the keyboard; in a split screen, click a pane to change it.
@@ -404,6 +420,7 @@ lib/stt.js           dictation: recordings in, text out, through scripts/stt-wor
 lib/tls.js           self-signed certificate for HTTPS=1
 lib/layouts.js       saved layouts of panes (DATA_DIR/layouts.json)
 lib/notes.js         the Notes pad's text, one per login (DATA_DIR/notes.json)
+lib/usage.js         plan usage of Claude Code, Codex and OpenCode, polled and pushed to the pages
 lib/atomic.js        data files replaced so a power cut leaves the old or the new one
 LICENSE             MIT license
 INSTALL.md          step-by-step installation instructions for an AI agent

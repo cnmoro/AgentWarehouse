@@ -18,6 +18,7 @@ const stt = require('./lib/stt');
 const tls = require('./lib/tls');
 const { Layouts } = require('./lib/layouts');
 const { Notes } = require('./lib/notes');
+const { Usage } = require('./lib/usage');
 
 // Configuration errors exit with 78 (EX_CONFIG); the systemd unit does not
 // restart on that code, since retrying cannot help.
@@ -317,6 +318,9 @@ const clients = new Set();
 const layouts = new Layouts(DATA_DIR);
 const sendLayouts = () => { for (const c of clients) send(c, { t: 'layouts', list: layouts.list() }); };
 const notes = new Notes(DATA_DIR);
+// Plan usage of Claude Code, Codex and OpenCode on this machine, polled while a page is connected.
+const usage = new Usage((data) => { for (const c of clients) send(c, { t: 'usage', ...data }); });
+const usageOn = usage.available();
 
 // The desktop: noVNC's WebSocket, relayed to the VNC server (lib/vnc.js).
 const vncWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
@@ -504,11 +508,15 @@ function onConnection(ws, session) {
   clients.add(client);
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
-  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, maxTabs: MAX_TABS, features: ['sessions', 'files', 'view', 'vnc', 'vnc-target', 'ssh', 'layouts', 'notes', 'changed-at', 'folders', ...(vnc.isUp() ? ['vnc-local'] : []), ...(vstream.info().ok ? ['vnc-fluid:' + vstream.info().codecs.join('+') + (vstream.info().nvenc ? '+gpu' : '')] : [])] });
+  send(client, { t: 'hello', email: session.email, scrollback: SCROLLBACK, maxTabs: MAX_TABS, features: ['sessions', 'files', 'view', 'vnc', 'vnc-target', 'ssh', 'layouts', 'notes', 'changed-at', 'folders', ...(usageOn ? ['usage'] : []), ...(vnc.isUp() ? ['vnc-local'] : []), ...(vstream.info().ok ? ['vnc-fluid:' + vstream.info().codecs.join('+') + (vstream.info().nvenc ? '+gpu' : '')] : [])] });
   syncClient(client);
   send(client, { t: 'layouts', list: layouts.list() });
   const note = notes.get(client.email);
   send(client, { t: 'notes', text: note.text, rev: note.rev });
+  if (usageOn) {
+    if (usage.data) send(client, { t: 'usage', ...usage.data });
+    usage.watch(true);
+  }
 
   ws.on('message', (raw) => {
     try {
@@ -526,6 +534,7 @@ function onConnection(ws, session) {
     client.subs.clear();
     client.out.clear();
     clients.delete(client);
+    if (!clients.size) usage.watch(false);
   });
 }
 

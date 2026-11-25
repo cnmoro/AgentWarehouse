@@ -1223,3 +1223,53 @@ body.resizing #main { pointer-events: none; }
 .layout-icon rect.li-files { fill: color-mix(in srgb, var(--warn) 45%, transparent); stroke: var(--warn); }
 .layout-icon rect.li-vnc { fill: color-mix(in srgb, var(--accent) 45%, transparent); stroke: var(--accent); }
 .layout-item.active .layout-icon rect.li-tab { stroke: var(--accent); opacity: 1; }
+
+/* ---------- usage panel (usage.js): floats over the terminals, see-through until hovered ---------- */
+.usage {
+  position: fixed; top: 44px; right: 16px; z-index: 20; width: 268px; padding: 0 0 6px;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent); border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 62%, transparent); color: var(--text);
+  backdrop-filter: blur(10px) saturate(1.2); -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .28); font-size: 12px; opacity: .82; transition: opacity .15s, background .15s;
+  user-select: none;
+}
+.usage:hover, .usage.dragging { opacity: 1; background: color-mix(in srgb, var(--panel) 86%, transparent); }
+.usage[hidden] { display: none; }
+.usage-head { display: flex; align-items: center; gap: 6px; padding: 6px 6px 4px 10px; cursor: grab; touch-action: none; }
+.usage.dragging .usage-head, .usage.dragging { cursor: grabbing; }
+.usage-title { flex: 1; font-size: 10.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.usage-min {
+  width: 20px; height: 20px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--muted);
+  font-size: 14px; line-height: 1; cursor: pointer;
+}
+.usage-min:hover, .usage-min:focus-visible { background: var(--line); color: var(--text); outline: none; }
+.usage-prov { padding: 4px 10px 2px; }
+.usage-prov + .usage-prov { border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); margin-top: 4px; padding-top: 6px; }
+.usage-prov.stale { opacity: .6; }
+.usage-prov-head { display: flex; align-items: baseline; gap: 6px; margin-bottom: 3px; }
+.usage-prov-name { font-weight: 600; }
+.usage-plan { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-row { display: grid; grid-template-columns: 78px 1fr 34px 52px; align-items: center; gap: 6px; height: 18px; }
+.usage-label { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-bar { height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--line) 90%, transparent); overflow: hidden; }
+.usage-fill { display: block; height: 100%; border-radius: 3px; background: var(--ok); }
+.usage-row.warn .usage-fill { background: var(--warn); }
+.usage-row.err .usage-fill { background: var(--err); }
+.usage-pct { text-align: right; font-variant-numeric: tabular-nums; }
+.usage-row.warn .usage-pct { color: var(--warn); }
+.usage-row.err .usage-pct { color: var(--err); }
+.usage-reset { text-align: right; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.usage-note { color: var(--muted); font-size: 11px; font-style: italic; padding: 1px 0 2px; }
+.usage-foot { padding: 5px 10px 0; color: var(--muted); font-size: 10.5px; opacity: .8; }
+/* Shrunk to a pill: one figure per tool, dragged or clicked anywhere. */
+.usage.min { width: auto; padding: 0; border-radius: 999px; display: flex; align-items: center; }
+.usage.min .usage-head { order: 2; padding: 3px 4px 3px 0; }
+.usage.min .usage-title { display: none; }
+.usage.min .usage-body { display: flex; gap: 10px; padding: 4px 4px 4px 12px; cursor: grab; touch-action: none; }
+.usage-pill-item { display: inline-flex; gap: 4px; align-items: baseline; white-space: nowrap; }
+.usage-pill-name { color: var(--muted); font-size: 11px; }
+.usage-pill-pct { font-weight: 600; font-variant-numeric: tabular-nums; }
+.usage-pill-item.ok .usage-pill-pct { color: var(--ok); }
+.usage-pill-item.warn .usage-pill-pct { color: var(--warn); }
+.usage-pill-item.err .usage-pill-pct { color: var(--err); }
+.usage-pill-item.none .usage-pill-pct { color: var(--muted); }
